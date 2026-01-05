@@ -25,7 +25,6 @@ public class TubeBuilderRenderer : MonoBehaviour
         public string name;
         public bool enabled;
 
-        [Header("Path")]
         public bool connectToPrevious; 
         public Vector3 p0;
         public Vector3 p1;
@@ -34,11 +33,9 @@ public class TubeBuilderRenderer : MonoBehaviour
         public int radialSegments;
         public float twist;
 
-        [Header("Caps")]
         public CapSettings startCap;
         public CapSettings endCap;
 
-        [Header("Visuals")]
         public UVMappingType uvMapping;
         public AnimationCurve radiusProfile;
         public AnimationCurve radialShapeCurve;
@@ -52,7 +49,6 @@ public class TubeBuilderRenderer : MonoBehaviour
         public float colorLerpScale;
         public int colorCutoffSegment;
 
-        [Header("Bones")]
         public bool useBones;
         public int bonesPerSegment;
         public bool useNestedChain;
@@ -92,55 +88,11 @@ public class TubeBuilderRenderer : MonoBehaviour
     private Vector3 globalNprev;
     private Vector3 globalBprev;
 
-    // ==========================================
-    // ANIMATION API (C# 4.0 SAFE)
-    // ==========================================
-
-    /// <summary>Sets the local position of a control point (0=P0, 1=P1, 2=P2)</summary>
-    public void SetPoint(int segmentIndex, int pointIndex, Vector3 localPosition)
-    {
-        if (segmentIndex < 0 || segmentIndex >= segments.Length) return;
-        
-        if (pointIndex == 0) segments[segmentIndex].p0 = localPosition;
-        else if (pointIndex == 1) segments[segmentIndex].p1 = localPosition;
-        else if (pointIndex == 2) segments[segmentIndex].p2 = localPosition;
-        
-        MarkDirty();
-    }
-
-    /// <summary>Offsets the local position of a control point additively</summary>
-    public void OffsetPoint(int segmentIndex, int pointIndex, Vector3 offset)
-    {
-        if (segmentIndex < 0 || segmentIndex >= segments.Length) return;
-
-        if (pointIndex == 0) segments[segmentIndex].p0 += offset;
-        else if (pointIndex == 1) segments[segmentIndex].p1 += offset;
-        else if (pointIndex == 2) segments[segmentIndex].p2 += offset;
-
-        MarkDirty();
-    }
-
-    /// <summary>Moves all three points of a segment by an offset</summary>
-    public void MoveSegment(int segmentIndex, Vector3 offset)
-    {
-        if (segmentIndex < 0 || segmentIndex >= segments.Length) return;
-        segments[segmentIndex].p0 += offset;
-        segments[segmentIndex].p1 += offset;
-        segments[segmentIndex].p2 += offset;
-        MarkDirty();
-    }
-
-    public Vector3 GetPoint(int segmentIndex, int pointIndex)
-    {
-        if (segmentIndex < 0 || segmentIndex >= segments.Length) return Vector3.zero;
-        if (pointIndex == 0) return segments[segmentIndex].p0;
-        if (pointIndex == 1) return segments[segmentIndex].p1;
-        return segments[segmentIndex].p2;
-    }
-
-    // ==========================================
-    // CORE ENGINE
-    // ==========================================
+    // Animation API
+    public void SetPoint(int si, int pi, Vector3 pos) { if (si >= 0 && si < segments.Length) { if (pi == 0) segments[si].p0 = pos; else if (pi == 1) segments[si].p1 = pos; else segments[si].p2 = pos; MarkDirty(); } }
+    public void OffsetPoint(int si, int pi, Vector3 off) { if (si >= 0 && si < segments.Length) { if (pi == 0) segments[si].p0 += off; else if (pi == 1) segments[si].p1 += off; else segments[si].p2 += off; MarkDirty(); } }
+    public void MoveSegment(int si, Vector3 off) { if (si >= 0 && si < segments.Length) { segments[si].p0 += off; segments[si].p1 += off; segments[si].p2 += off; MarkDirty(); } }
+    public Vector3 GetPoint(int si, int pi) { if (si < 0 || si >= segments.Length) return Vector3.zero; return (pi == 0) ? segments[si].p0 : (pi == 1) ? segments[si].p1 : segments[si].p2; }
 
     public void MarkDirty() { isDirty = true; }
 
@@ -193,18 +145,11 @@ public class TubeBuilderRenderer : MonoBehaviour
         return sample;
     }
 
-    private float GetSampledValue(float[] table, float t)
-    {
-        return table[Mathf.Clamp((int)(t * 99f), 0, 99)];
-    }
-
     public void Rebuild()
     {
         if (segments == null || segments.Length == 0) { if (mesh != null) mesh.Clear(); return; }
-
         bool anyBones = false;
         for (int i = 0; i < segments.Length; i++) { if (segments[i].enabled && segments[i].useBones) { anyBones = true; break; } }
-
         SyncRenderer(anyBones);
         EnsureMesh();
 
@@ -213,8 +158,7 @@ public class TubeBuilderRenderer : MonoBehaviour
         {
             TubeSegment s = segments[i];
             if (!s.enabled) continue;
-            int ring = Mathf.Max(3, s.radialSegments);
-            int seg = Mathf.Max(2, s.segments);
+            int ring = Mathf.Max(3, s.radialSegments); int seg = Mathf.Max(2, s.segments);
             if (s.generateTube) {
                 if (s.useHardEdges) { totalV += (seg - 1) * ring * 4; totalT += (seg - 1) * ring * 6; }
                 else { totalV += seg * ring; totalT += (seg - 1) * ring * 6; }
@@ -235,15 +179,13 @@ public class TubeBuilderRenderer : MonoBehaviour
         List<Matrix4x4> bindPoses = new List<Matrix4x4>();
         allBones.Add(transform); bindPoses.Add(transform.worldToLocalMatrix * transform.localToWorldMatrix);
 
-        Transform globalLastBone = null;
-        bool isFirstSegment = true;
+        Transform globalLastBone = null; bool isFirstSegment = true;
 
         for (int si = 0; si < segments.Length; si++)
         {
             TubeSegment s = segments[si];
             if (!s.enabled) continue;
             int vStart = v; int boneIdx = 0;
-
             PrecomputeRadialTable(s.radialSegments);
             sampledRadius = PreSampleCurve(s.radiusProfile);
             sampledShape = PreSampleCurve(s.radialShapeCurve);
@@ -258,22 +200,16 @@ public class TubeBuilderRenderer : MonoBehaviour
                 curveTan[i] = (d.sqrMagnitude < 1e-6f) ? Vector3.forward : d.normalized;
             }
 
-            if (isFirstSegment || !s.connectToPrevious)
-            {
+            if (isFirstSegment || !s.connectToPrevious) {
                 Vector3 T0 = curveTan[0], refDir = (s.p1 - s.p0);
-                refDir -= T0 * Vector3.Dot(T0, refDir);
-                if (refDir.sqrMagnitude < 1e-6f) refDir = Vector3.Cross(T0, Vector3.up);
-                refDir.Normalize();
-                globalNprev = refDir;
-                globalBprev = Vector3.Cross(T0, globalNprev);
-                isFirstSegment = false;
+                refDir -= T0 * Vector3.Dot(T0, refDir); if (refDir.sqrMagnitude < 1e-6f) refDir = Vector3.Cross(T0, Vector3.up);
+                refDir.Normalize(); globalNprev = refDir; globalBprev = Vector3.Cross(T0, globalNprev); isFirstSegment = false;
             }
 
             if (s.useBones) { boneIdx = allBones.Count; globalLastBone = SetupSegmentBones(si, ref allBones, ref bindPoses, globalLastBone, globalNprev); }
 
             Vector3 startN = globalNprev; Vector3 startB = globalBprev;
-            int firstRingIdx = -1, lastRingIdx = -1;
-            float accumulatedDist = 0f;
+            int firstRingIdx = -1, lastRingIdx = -1; float accumulatedDist = 0f;
 
             if (s.generateTube) {
                 if (s.useHardEdges) {
@@ -289,8 +225,7 @@ public class TubeBuilderRenderer : MonoBehaviour
                         Vector3 B1 = Vector3.Cross(T1c, N1);
                         float r0 = GetSampledValue(sampledRadius, tc0), r1 = GetSampledValue(sampledRadius, tc1);
                         for (int j = 0; j < ring; j++) {
-                            int j1 = (j + 1) % ring;
-                            float rs0 = GetSampledValue(sampledShape, (float)j/ring), rs1 = GetSampledValue(sampledShape, (float)j1/ring);
+                            int j1 = (j + 1) % ring; float rs0 = GetSampledValue(sampledShape, (float)j/ring), rs1 = GetSampledValue(sampledShape, (float)j1/ring);
                             int bIdx = v;
                             AddVertex(curvePos[i] + (N0 * radialCos[j] + B0 * radialSin[j]) * r0 * rs0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, v0 * s.uvTiling.y + s.uvOffset.y), tc0, Color.Lerp(s.startColor, s.endColor, tc0), T0c, ref v, ref minB, ref maxB);
                             AddVertex(curvePos[i] + (N0 * radialCos[j1] + B0 * radialSin[j1]) * r0 * rs1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, v0 * s.uvTiling.y + s.uvOffset.y), tc0, Color.Lerp(s.startColor, s.endColor, tc0), T0c, ref v, ref minB, ref maxB);
@@ -304,8 +239,7 @@ public class TubeBuilderRenderer : MonoBehaviour
                     int tubeBase = v;
                     for (int i = 0; i < seg; i++) {
                         if (i > 0) accumulatedDist += Vector3.Distance(curvePos[i], curvePos[i-1]);
-                        float tc = (float)i / (seg - 1);
-                        float vCoord = (s.uvMapping == UVMappingType.WorldSpace) ? accumulatedDist : tc;
+                        float tc = (float)i / (seg - 1); float vCoord = (s.uvMapping == UVMappingType.WorldSpace) ? accumulatedDist : tc;
                         Vector3 T = curveTan[i], N = (i == 0) ? startN : CalculateParallelTransport(T, ref globalNprev, ref globalBprev), B = Vector3.Cross(T, N);
                         if (Mathf.Abs(s.twist) > 0.001f) { Quaternion q = Quaternion.AngleAxis(s.twist * tc, T); N = q * N; B = q * B; }
                         float rad = GetSampledValue(sampledRadius, tc); int rS = v;
@@ -317,10 +251,7 @@ public class TubeBuilderRenderer : MonoBehaviour
                     }
                     for (int i = 0; i < seg - 1; i++) {
                         int rA = tubeBase + i * ring, rB = tubeBase + (i + 1) * ring;
-                        for (int j = 0; j < ring; j++) {
-                            int j1 = (j + 1) % ring;
-                            tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j; tris[t++] = rA + j1; tris[t++] = rB + j1; tris[t++] = rB + j;
-                        }
+                        for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j; tris[t++] = rA + j1; tris[t++] = rB + j1; tris[t++] = rB + j; }
                     }
                 }
             }
@@ -371,6 +302,7 @@ public class TubeBuilderRenderer : MonoBehaviour
     }
 
     private Vector3 CalculateParallelTransport(Vector3 T, ref Vector3 Np, ref Vector3 Bp) { Vector3 N = Np - T * Vector3.Dot(T, Np); if (N.sqrMagnitude < 1e-6f) N = Vector3.Cross(T, Vector3.up); N.Normalize(); Np = N; Bp = Vector3.Cross(T, N); return N; }
+    private float GetSampledValue(float[] table, float t) { return table[Mathf.Clamp((int)(t * 99f), 0, 99)]; }
     void BuildFlat(Vector3 c, Color col, ref int v, out int ci, ref Vector3 mi, ref Vector3 ma) { ci = v; AddVertex(c, new Vector2(0.5f, 0.5f), 0f, col, Vector3.up, ref v, ref mi, ref ma); }
     void BuildPoint(Vector3 c, Vector3 d, float s, float r, Color col, ref int v, out int ti, ref Vector3 mi, ref Vector3 ma) { ti = v; AddVertex(c + d.normalized * (r * s), new Vector2(0.5f, 1f), 1f, col, d, ref v, ref mi, ref ma); }
     void BuildFan(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = rS + (j + 1) % r; tris[t++] = ci; } }
@@ -400,6 +332,13 @@ public class TubeBuilderRenderer : MonoBehaviour
     int GetCapVertCount(CapSettings cp, int r) { if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return r + 1; if (cp.type == TubeCapType.Rounded) return (Mathf.Max(2, cp.segments) * r + 1 + r); if (cp.type == TubeCapType.FullSphere) { int g = Mathf.Max(3, cp.sphereResolution) + 1; return g * g; } return 0; }
     int GetCapTriCount(CapSettings cp, int r) { if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return r * 3; if (cp.type == TubeCapType.Rounded) return Mathf.Max(2, cp.segments) * r * 6 + r * 3; if (cp.type == TubeCapType.FullSphere) { int res = Mathf.Max(3, cp.sphereResolution); return res * res * 6; } return 0; }
     
+    void ApplyBoneWeights(int sV, int eV, TubeSegment s, int bI) {
+        if (!s.useBones) { for (int i = sV; i < eV; i++) { weights[i].boneIndex0 = 0; weights[i].weight0 = 1f; } return; }
+        for (int i = sV; i < eV; i++) {
+            float t = Mathf.Clamp01((vertNormalizedV[i] + s.blendOffset) * s.blendScaler); float bT = t * (s.bonesPerSegment - 1); int bA = Mathf.FloorToInt(bT), bB = Mathf.Clamp(bA + 1, 0, s.bonesPerSegment - 1); float wB = bT - bA;
+            weights[i].boneIndex0 = bI + bA; weights[i].weight0 = 1f - wB; weights[i].boneIndex1 = bI + bB; weights[i].weight1 = wB;
+        }
+    }
     Transform SetupSegmentBones(int si, ref List<Transform> allB, ref List<Matrix4x4> bp, Transform lastB, Vector3 startN) {
         int ct = Mathf.Max(1, segments[si].bonesPerSegment); if (segments[si].boneInstances == null) segments[si].boneInstances = new List<Transform>();
         while (segments[si].boneInstances.Count > ct) { if (segments[si].boneInstances[0]) DestroyImmediate(segments[si].boneInstances[0].gameObject); segments[si].boneInstances.RemoveAt(0); }
