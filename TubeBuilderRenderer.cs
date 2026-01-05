@@ -63,7 +63,9 @@ public class TubeBuilderRenderer : MonoBehaviour
 
     public TubeSegment[] segments;
     public Color gizmoCurveColor = Color.white;
+    public Color gizmoBoneColor = Color.cyan;
     public bool showWeightsDebug;
+    public bool showBonesGizmo = true;
     public bool autoRebuild = true;
 
     private Mesh mesh;
@@ -108,7 +110,6 @@ public class TubeBuilderRenderer : MonoBehaviour
             if (segments[i].connectToPrevious)
             {
                 segments[i].p0 = segments[i - 1].p2;
-                // Mirror P1 handle: New P1 = Prev P2 + (Prev P2 - Prev P1)
                 segments[i].p1 = segments[i - 1].p2 + (segments[i - 1].p2 - segments[i - 1].p1);
             }
         }
@@ -250,7 +251,6 @@ public class TubeBuilderRenderer : MonoBehaviour
                 }
             }
 
-            // Cap Generation
             if (s.startCap.type != TubeCapType.None) {
                 if (s.startCap.type == TubeCapType.Flat) { int ci; BuildFlat(curvePos[0], s.startColor, ref v, out ci, ref minB, ref maxB); if (firstRingIdx >= 0) BuildFanRev(ci, firstRingIdx, ring, ref t); }
                 else if (s.startCap.type == TubeCapType.Rounded) { if (firstRingIdx >= 0) BuildRoundedCap(verts, firstRingIdx, curvePos[0], GetSampledValue(sampledRadius, 0f), ring, s.startCap, -curveTan[0], startN, startB, s.startColor, true, ref v, ref t, ref minB, ref maxB); }
@@ -282,7 +282,27 @@ public class TubeBuilderRenderer : MonoBehaviour
         mesh.RecalculateNormals(); mesh.bounds = new Bounds((min + max) * 0.5f, (max - min));
     }
 
-    // Geometry Helpers (Condensed for space but complete)
+    void OnDrawGizmosSelected() {
+        if (!showBonesGizmo || segments == null) return;
+        
+        Gizmos.color = gizmoBoneColor;
+        for (int i = 0; i < segments.Length; i++) {
+            if (segments[i].boneInstances == null) continue;
+            for (int j = 0; j < segments[si_safe(i)].boneInstances.Count; j++) {
+                Transform curr = segments[i].boneInstances[j];
+                if (curr == null) continue;
+                
+                Gizmos.DrawWireSphere(curr.position, 0.015f);
+                if (curr.parent != null && curr.parent != transform) {
+                    Gizmos.DrawLine(curr.position, curr.parent.position);
+                }
+            }
+        }
+    }
+    
+    private int si_safe(int i) { return Mathf.Clamp(i, 0, segments.Length-1); }
+
+    // Geometry Helpers
     private Vector3 CalculateParallelTransport(Vector3 T, ref Vector3 Np, ref Vector3 Bp) { Vector3 N = Np - T * Vector3.Dot(T, Np); if (N.sqrMagnitude < 1e-6f) N = Vector3.Cross(T, Vector3.up); N.Normalize(); Np = N; Bp = Vector3.Cross(T, N); return N; }
     private float GetSampledValue(float[] table, float t) { return table[Mathf.Clamp((int)(t * 99f), 0, 99)]; }
     void BuildFlat(Vector3 c, Color col, ref int v, out int ci, ref Vector3 mi, ref Vector3 ma) { ci = v; AddVertex(c, new Vector2(0.5f, 0.5f), col, Vector3.up, ref v, ref mi, ref ma); }
