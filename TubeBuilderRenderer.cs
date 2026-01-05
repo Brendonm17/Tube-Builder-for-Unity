@@ -45,11 +45,10 @@ public class TubeBuilderRenderer : MonoBehaviour
         public float colorLerpOffset;
         public float colorLerpScale;
 
-        public int colorCutoffSegment;
+        public int colorCutoffSegment; 
 
-        public float capScale;
+        public float capScale; 
 
-        // Bone System Variables
         public bool useBones;
         public int bonesPerSegment;
         public bool useNestedChain;
@@ -62,8 +61,10 @@ public class TubeBuilderRenderer : MonoBehaviour
 
     public TubeSegment[] segments;
     public Color gizmoCurveColor = Color.white;
+    public bool showWeightsDebug;
 
     private Mesh mesh;
+
     private Vector3[] verts = new Vector3[0];
     private Vector2[] uvs = new Vector2[0];
     private Color[] colors = new Color[0];
@@ -72,8 +73,8 @@ public class TubeBuilderRenderer : MonoBehaviour
 
     private Vector3[] curvePos = new Vector3[0];
     private Vector3[] curveTan = new Vector3[0];
-    private int[] ringStarts = new int[0];
 
+    private int[] ringStarts = new int[0];
     private bool wasSkinningActive = false;
 
     static Color LerpColor(Color a, Color b, float t)
@@ -129,7 +130,7 @@ public class TubeBuilderRenderer : MonoBehaviour
             return;
         }
 
-        // Pass 0: Manual check for any active bones (No Linq)
+        // Pass 0: Check for any active bones (No Linq)
         bool anyBones = false;
         for (int i = 0; i < segments.Length; i++)
         {
@@ -146,7 +147,7 @@ public class TubeBuilderRenderer : MonoBehaviour
         int totalV = 0;
         int totalT = 0;
 
-        // Pass 1: Count vertices and triangles
+        // Pass 1: count vertices and triangles
         for (int i = 0; i < segments.Length; i++)
         {
             TubeSegment s = segments[i];
@@ -157,6 +158,7 @@ public class TubeBuilderRenderer : MonoBehaviour
             int lat = s.roundedCapSegments > 0 ? Mathf.Max(2, s.roundedCapSegments) : LatSeg(ring);
 
             bool fullSphere = (s.capStart == TubeCapType.FullSphere && s.capEnd == TubeCapType.FullSphere && s.segments <= 1);
+
             if (fullSphere)
             {
                 int g = ring + 1;
@@ -167,20 +169,21 @@ public class TubeBuilderRenderer : MonoBehaviour
 
             if (s.generateTube)
             {
-                int extraRing = (s.colorCutoffSegment > 0 && s.colorCutoffSegment < seg) ? 1 : 0;
-                int ringCount = seg + extraRing;
+                bool hardCut = (s.colorCutoffSegment > 0 && s.colorCutoffSegment < seg);
+                int ringCount = seg + (hardCut ? 1 : 0);
                 totalV += ringCount * ring;
                 totalT += (ringCount - 1) * ring * 6;
             }
 
-            // Caps Vert Counting
+            // Start cap
             if (s.capStart == TubeCapType.Flat || s.capStart == TubeCapType.Point) { totalV += (ring + 1); totalT += ring * 3; }
             else if (s.capStart == TubeCapType.Rounded) { totalV += (lat * ring + 1 + ring); totalT += lat * ring * 6 + ring * 3; }
-            else if (s.capStart == TubeCapType.FullSphere) { totalV += (ring + 1) * (ring + 1); totalT += ring * ring * 6; }
+            else if (s.capStart == TubeCapType.FullSphere) { int g = ring + 1; totalV += g * g; totalT += ring * ring * 6; }
 
+            // End cap
             if (s.capEnd == TubeCapType.Flat || s.capEnd == TubeCapType.Point) { totalV += (ring + 1); totalT += ring * 3; }
             else if (s.capEnd == TubeCapType.Rounded) { totalV += (lat * ring + 1 + ring); totalT += lat * ring * 6 + ring * 3; }
-            else if (s.capEnd == TubeCapType.FullSphere) { totalV += (ring + 1) * (ring + 1); totalT += ring * ring * 6; }
+            else if (s.capEnd == TubeCapType.FullSphere) { int g = ring + 1; totalV += g * g; totalT += ring * ring * 6; }
         }
 
         if (verts.Length < totalV)
@@ -190,8 +193,7 @@ public class TubeBuilderRenderer : MonoBehaviour
             colors = new Color[totalV];
             weights = new BoneWeight[totalV];
         }
-        if (tris.Length < totalT)
-            tris = new int[totalT];
+        if (tris.Length < totalT) tris = new int[totalT];
 
         int v = 0;
         int t = 0;
@@ -199,13 +201,13 @@ public class TubeBuilderRenderer : MonoBehaviour
         List<Transform> allBones = new List<Transform>();
         List<Matrix4x4> bindPoses = new List<Matrix4x4>();
         
-        // Bone 0: Root static
+        // Bone 0: Root Static
         allBones.Add(this.transform);
         bindPoses.Add(this.transform.worldToLocalMatrix * transform.localToWorldMatrix);
 
         Transform globalLastBone = null;
 
-        // Pass 2: Build geometry
+        // Pass 2: build geometry
         for (int si = 0; si < segments.Length; si++)
         {
             TubeSegment s = segments[si];
@@ -312,7 +314,7 @@ public class TubeBuilderRenderer : MonoBehaviour
                         }
                     }
                 }
-                else // Hard Cut Logic
+                else // Hard Cut
                 {
                     int ringCount = 0; int seamRingIndex = -1; EnsureRingStarts(seg + 1);
                     for (int i = 0; i < seg; i++) {
@@ -373,7 +375,6 @@ public class TubeBuilderRenderer : MonoBehaviour
                 }
             }
 
-            // Caps Logic
             Vector3 curT0 = curveTan[0]; Vector3 curT1 = curveTan[seg - 1];
             if (s.capStart == TubeCapType.Flat) {
                 int ci; BuildFlat(curvePos[0], startColor, ref v, out ci);
@@ -383,6 +384,8 @@ public class TubeBuilderRenderer : MonoBehaviour
                 if (firstRing >= 0) BuildFanRev(ci, firstRing, ring, ref t);
             } else if (s.capStart == TubeCapType.Rounded) {
                 if (firstRing >= 0) BuildRoundedCapStart_UsingTubeRing(verts, firstRing, curvePos[0], s.radiusProfile.Evaluate(0f), ring, latSeg, -curT0, startN, startB, startColor, s.capScale, s.bulgePower, ref v, ref t);
+            } else if (s.capStart == TubeCapType.FullSphere) {
+                BuildSphere(curvePos[0], s.sphereRadius, ring, startColor, curT0, startN, startB, 0f, ref v, ref t);
             }
 
             if (s.capEnd == TubeCapType.Flat) {
@@ -393,14 +396,24 @@ public class TubeBuilderRenderer : MonoBehaviour
                 if (lastRing >= 0) BuildFan(ci, lastRing, ring, ref t);
             } else if (s.capEnd == TubeCapType.Rounded) {
                 if (lastRing >= 0) BuildRoundedCapEnd_UsingTubeRing(verts, lastRing, curvePos[seg - 1], s.radiusProfile.Evaluate(1f), ring, latSeg, curT1, Nprev, Bprev, s.twist, endColor, s.capScale, s.bulgePower, ref v, ref t);
+            } else if (s.capEnd == TubeCapType.FullSphere) {
+                BuildSphere(curvePos[seg - 1], s.sphereRadius, ring, endColor, curT1, Nprev, Bprev, s.twist, ref v, ref t);
             }
 
             ApplyBoneWeights(vStart, v, s, boneStartGlobalIdx);
         }
 
-        // Final Mesh Assembly (Manual Array Copy for No-LINQ)
+        // Finalize Mesh Data (Manual Array Copy for No-LINQ / C# 4.0)
         Vector3[] fV = new Vector3[v]; Vector2[] fU = new Vector2[v]; Color[] fC = new Color[v]; int[] fT = new int[t];
         Array.Copy(verts, fV, v); Array.Copy(uvs, fU, v); Array.Copy(colors, fC, v); Array.Copy(tris, fT, t);
+
+        // Debug Weights Over Vertex Colors
+        if (showWeightsDebug && anyBones) {
+            for (int i = 0; i < v; i++) {
+                float w = weights[i].weight0;
+                fC[i] = new Color(w, 0, 1f - w, 1f); // Heatmap: Red = Max, Blue = Min
+            }
+        }
 
         mesh.Clear(); mesh.vertices = fV; mesh.uv = fU; mesh.colors = fC; mesh.triangles = fT;
 
@@ -421,10 +434,11 @@ public class TubeBuilderRenderer : MonoBehaviour
         }
         int bCount = s.bonesPerSegment;
         for (int i = start; i < end; i++) {
-            float t = Mathf.Clamp01((uvs[i].y + s.blendOffset) * s.blendScaler);
-            float bT = t * (bCount - 1);
+            float progress = uvs[i].y;
+            float t = Mathf.Clamp01((progress + s.blendOffset) * s.blendScaler);
+            float bT = t * (float)(bCount - 1);
             int bA = Mathf.FloorToInt(bT); int bB = Mathf.Clamp(bA + 1, 0, bCount - 1);
-            float wB = bT - bA;
+            float wB = bT - (float)bA;
             weights[i].boneIndex0 = boneIdx + bA; weights[i].weight0 = 1f - wB;
             weights[i].boneIndex1 = boneIdx + bB; weights[i].weight1 = wB;
         }
@@ -438,7 +452,7 @@ public class TubeBuilderRenderer : MonoBehaviour
         while (segments[si].boneInstances.Count < count) { GameObject go = new GameObject("Bone"); go.transform.parent = transform; segments[si].boneInstances.Add(go.transform); }
 
         for (int b = 0; b < count; b++) {
-            float t = (float)b / (count > 1 ? count - 1 : 1);
+            float t = (float)b / (count > 1 ? (float)(count - 1) : 1.0f);
             Transform bone = segments[si].boneInstances[b];
             bone.localPosition = GetBezierPoint(segments[si], t);
             bone.localRotation = Quaternion.LookRotation(GetBezierTangent(segments[si], t));
@@ -466,7 +480,7 @@ public class TubeBuilderRenderer : MonoBehaviour
         else if (GetComponent<MeshFilter>()) GetComponent<MeshFilter>().sharedMesh = mesh;
     }
 
-    // Original Geometry Helpers
+    // Geometry Core Functions
     void BuildFlat(Vector3 c, Color col, ref int v, out int ci) { ci = v; verts[v] = c; uvs[v] = new Vector2(0.5f, 0.5f); colors[v] = col; v++; }
     void BuildPoint(Vector3 c, Vector3 dir, TubeSegment s, float tC, Color col, ref int v, out int ti) { float r = s.radiusProfile != null ? s.radiusProfile.Evaluate(tC) : 0.03f; ti = v; verts[v] = c + dir.normalized * (r * s.capScale); uvs[v] = new Vector2(0.5f, 1f); colors[v] = col; v++; }
     void BuildFan(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = rS + (j + 1) % r; tris[t++] = ci; } }
