@@ -5,14 +5,16 @@ using UnityEditorInternal;
 [CustomEditor(typeof(TubeBuilderRenderer))]
 public class TubeBuilderRendererEditor : Editor
 {
-    SerializedProperty segmentsProp, gizmoCurveColor, showWeightsDebugProp, showBonesGizmoProp, autoRebuildProp;
+    SerializedProperty segmentsProp, gizmoCurveColor, gizmoBoneColor, showWeightsDebugProp, showBonesGizmoProp, autoRebuildProp;
     ReorderableList list;
     int selectedIndex = -1;
 
     void OnEnable() {
-        segmentsProp = serializedObject.FindProperty("segments"); gizmoCurveColor = serializedObject.FindProperty("gizmoCurveColor");
+        segmentsProp = serializedObject.FindProperty("segments"); 
+        gizmoCurveColor = serializedObject.FindProperty("gizmoCurveColor");
+        gizmoBoneColor = serializedObject.FindProperty("gizmoBoneColor");
         showWeightsDebugProp = serializedObject.FindProperty("showWeightsDebug"); 
-        showBonesGizmoProp = serializedObject.FindProperty("showBonesGizmo"); // NEW
+        showBonesGizmoProp = serializedObject.FindProperty("showBonesGizmo");
         autoRebuildProp = serializedObject.FindProperty("autoRebuild");
         
         list = new ReorderableList(serializedObject, segmentsProp, true, true, true, true);
@@ -32,10 +34,11 @@ public class TubeBuilderRendererEditor : Editor
     public override void OnInspectorGUI() {
         serializedObject.Update(); TubeBuilderRenderer r = (TubeBuilderRenderer)target;
         EditorGUILayout.LabelField("Global Settings", EditorStyles.boldLabel);
-        EditorGUILayout.PropertyField(gizmoCurveColor); 
+        EditorGUILayout.PropertyField(gizmoCurveColor);
+        EditorGUILayout.PropertyField(gizmoBoneColor);
         EditorGUILayout.PropertyField(autoRebuildProp); 
         EditorGUILayout.PropertyField(showWeightsDebugProp);
-        EditorGUILayout.PropertyField(showBonesGizmoProp); // NEW TOGGLE
+        EditorGUILayout.PropertyField(showBonesGizmoProp);
         
         if (GUILayout.Button("Force Rebuild")) { r.MarkDirty(); r.Rebuild(); }
         EditorGUILayout.Space();
@@ -88,3 +91,4 @@ public class TubeBuilderRendererEditor : Editor
         }
     }
 }
+
