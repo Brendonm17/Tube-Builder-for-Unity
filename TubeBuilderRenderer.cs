@@ -6,6 +6,7 @@ using System;
 public class TubeBuilderRenderer : MonoBehaviour
 {
     public enum TubeCapType { None, Flat, Point, Rounded, FullSphere }
+    public enum UVMappingType { Normalized, WorldSpace }
 
     [System.Serializable]
     public struct CapSettings
@@ -13,8 +14,8 @@ public class TubeBuilderRenderer : MonoBehaviour
         public TubeCapType type;
         public float scale;
         public float bulge;
-        public int segments;
-        public int sphereResolution;
+        public int segments;         
+        public int sphereResolution; 
         public float sphereRadius;
     }
 
@@ -38,8 +39,9 @@ public class TubeBuilderRenderer : MonoBehaviour
         public CapSettings endCap;
 
         [Header("Visuals")]
-        public AnimationCurve radiusProfile;
-        public AnimationCurve radialShapeCurve;
+        public UVMappingType uvMapping;
+        public AnimationCurve radiusProfile;      
+        public AnimationCurve radialShapeCurve;   
         public bool useHardEdges;
         public Vector2 uvTiling;
         public Vector2 uvOffset;
@@ -63,7 +65,6 @@ public class TubeBuilderRenderer : MonoBehaviour
 
     public TubeSegment[] segments;
     public Color gizmoCurveColor = Color.white;
-    public Color gizmoBoneColor = Color.cyan;
     public bool showWeightsDebug;
     public bool showBonesGizmo = true;
     public bool autoRebuild = true;
@@ -75,6 +76,9 @@ public class TubeBuilderRenderer : MonoBehaviour
     private Vector4[] tangents = new Vector4[0];
     private BoneWeight[] weights = new BoneWeight[0];
     private int[] tris = new int[0];
+
+    // Internal buffer for normalized progress (Bone safety)
+    private float[] vertNormalizedV = new float[0];
 
     private Vector3[] curvePos = new Vector3[0];
     private Vector3[] curveTan = new Vector3[0];
@@ -165,7 +169,7 @@ public class TubeBuilderRenderer : MonoBehaviour
 
         if (verts.Length < totalV) {
             verts = new Vector3[totalV]; uvs = new Vector2[totalV]; colors = new Color[totalV]; 
-            weights = new BoneWeight[totalV]; tangents = new Vector4[totalV];
+            weights = new BoneWeight[totalV]; tangents = new Vector4[totalV]; vertNormalizedV = new float[totalV];
         }
         if (tris.Length < totalT) tris = new int[totalT];
 
@@ -206,38 +210,47 @@ public class TubeBuilderRenderer : MonoBehaviour
             Vector3 startN = Nprev, startB = Bprev;
 
             int firstRingIdx = -1, lastRingIdx = -1;
+            float accumulatedDist = 0f;
 
             if (s.generateTube) {
                 if (s.useHardEdges) {
                     for (int i = 0; i < seg - 1; i++) {
+                        float dist = Vector3.Distance(curvePos[i], curvePos[i+1]);
                         float tc0 = (float)i / (seg - 1), tc1 = (float)(i + 1) / (seg - 1);
+                        float v0 = (s.uvMapping == UVMappingType.WorldSpace) ? accumulatedDist : tc0;
+                        float v1 = (s.uvMapping == UVMappingType.WorldSpace) ? (accumulatedDist + dist) : tc1;
+
                         Vector3 T0c = curveTan[i], T1c = curveTan[i+1];
                         Vector3 N0 = (i == 0) ? startN : CalculateParallelTransport(T0c, ref Nprev, ref Bprev);
                         Vector3 B0 = Vector3.Cross(T0c, N0);
                         Vector3 N1 = CalculateParallelTransport(T1c, ref Nprev, ref Bprev);
                         Vector3 B1 = Vector3.Cross(T1c, N1);
                         float r0 = GetSampledValue(sampledRadius, tc0), r1 = GetSampledValue(sampledRadius, tc1);
+
                         for (int j = 0; j < ring; j++) {
                             int j1 = (j + 1) % ring;
                             float rs0 = GetSampledValue(sampledShape, (float)j/ring), rs1 = GetSampledValue(sampledShape, (float)j1/ring);
                             int bIdx = v;
-                            AddVertex(curvePos[i] + (N0 * radialCos[j] + B0 * radialSin[j]) * r0 * rs0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, tc0 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc0), T0c, ref v, ref minB, ref maxB);
-                            AddVertex(curvePos[i] + (N0 * radialCos[j1] + B0 * radialSin[j1]) * r0 * rs1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, tc0 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc0), T0c, ref v, ref minB, ref maxB);
-                            AddVertex(curvePos[i+1] + (N1 * radialCos[j] + B1 * radialSin[j]) * r1 * rs0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, tc1 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc1), T1c, ref v, ref minB, ref maxB);
-                            AddVertex(curvePos[i+1] + (N1 * radialCos[j1] + B1 * radialSin[j1]) * r1 * rs1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, tc1 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc1), T1c, ref v, ref minB, ref maxB);
+                            AddVertex(curvePos[i] + (N0 * radialCos[j] + B0 * radialSin[j]) * r0 * rs0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, v0 * s.uvTiling.y + s.uvOffset.y), tc0, Color.Lerp(s.startColor, s.endColor, tc0), T0c, ref v, ref minB, ref maxB);
+                            AddVertex(curvePos[i] + (N0 * radialCos[j1] + B0 * radialSin[j1]) * r0 * rs1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, v0 * s.uvTiling.y + s.uvOffset.y), tc0, Color.Lerp(s.startColor, s.endColor, tc0), T0c, ref v, ref minB, ref maxB);
+                            AddVertex(curvePos[i+1] + (N1 * radialCos[j] + B1 * radialSin[j]) * r1 * rs0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, v1 * s.uvTiling.y + s.uvOffset.y), tc1, Color.Lerp(s.startColor, s.endColor, tc1), T1c, ref v, ref minB, ref maxB);
+                            AddVertex(curvePos[i+1] + (N1 * radialCos[j1] + B1 * radialSin[j1]) * r1 * rs1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, v1 * s.uvTiling.y + s.uvOffset.y), tc1, Color.Lerp(s.startColor, s.endColor, tc1), T1c, ref v, ref minB, ref maxB);
                             tris[t++] = bIdx; tris[t++] = bIdx + 2; tris[t++] = bIdx + 1; tris[t++] = bIdx + 1; tris[t++] = bIdx + 2; tris[t++] = bIdx + 3;
                         }
+                        accumulatedDist += dist;
                     }
                 } else {
                     int tubeBase = v;
                     for (int i = 0; i < seg; i++) {
+                        if (i > 0) accumulatedDist += Vector3.Distance(curvePos[i], curvePos[i-1]);
                         float tc = (float)i / (seg - 1);
+                        float vCoord = (s.uvMapping == UVMappingType.WorldSpace) ? accumulatedDist : tc;
                         Vector3 T = curveTan[i], N = (i == 0) ? startN : CalculateParallelTransport(T, ref Nprev, ref Bprev), B = Vector3.Cross(T, N);
                         if (Mathf.Abs(s.twist) > 0.001f) { Quaternion q = Quaternion.AngleAxis(s.twist * tc, T); N = q * N; B = q * B; }
                         float rad = GetSampledValue(sampledRadius, tc); int rS = v;
                         for (int j = 0; j < ring; j++) {
                             float rs = GetSampledValue(sampledShape, (float)j/ring);
-                            AddVertex(curvePos[i] + (N * radialCos[j] + B * radialSin[j]) * rad * rs, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, tc * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc), T, ref v, ref minB, ref maxB);
+                            AddVertex(curvePos[i] + (N * radialCos[j] + B * radialSin[j]) * rad * rs, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, vCoord * s.uvTiling.y + s.uvOffset.y), tc, Color.Lerp(s.startColor, s.endColor, tc), T, ref v, ref minB, ref maxB);
                         }
                         if (i == 0) firstRingIdx = rS; if (i == seg - 1) lastRingIdx = rS;
                     }
@@ -266,8 +279,8 @@ public class TubeBuilderRenderer : MonoBehaviour
         FinalizeMesh(v, t, anyBones, allBones, bindPoses, minB, maxB);
     }
 
-    private void AddVertex(Vector3 p, Vector2 u, Color c, Vector3 tan, ref int v, ref Vector3 min, ref Vector3 max) {
-        verts[v] = p; uvs[v] = u; colors[v] = c; tangents[v] = new Vector4(tan.x, tan.y, tan.z, 1.0f);
+    private void AddVertex(Vector3 p, Vector2 u, float normV, Color c, Vector3 tan, ref int v, ref Vector3 min, ref Vector3 max) {
+        verts[v] = p; uvs[v] = u; colors[v] = c; tangents[v] = new Vector4(tan.x, tan.y, tan.z, 1.0f); vertNormalizedV[v] = normV;
         if (p.x < min.x) min.x = p.x; if (p.y < min.y) min.y = p.y; if (p.z < min.z) min.z = p.z;
         if (p.x > max.x) max.x = p.x; if (p.y > max.y) max.y = p.y; if (p.z > max.z) max.z = p.z;
         v++;
@@ -284,29 +297,22 @@ public class TubeBuilderRenderer : MonoBehaviour
 
     void OnDrawGizmosSelected() {
         if (!showBonesGizmo || segments == null) return;
-        
-        Gizmos.color = gizmoBoneColor;
+        Gizmos.color = Color.cyan;
         for (int i = 0; i < segments.Length; i++) {
             if (segments[i].boneInstances == null) continue;
-            for (int j = 0; j < segments[si_safe(i)].boneInstances.Count; j++) {
+            for (int j = 0; j < segments[i].boneInstances.Count; j++) {
                 Transform curr = segments[i].boneInstances[j];
                 if (curr == null) continue;
-                
                 Gizmos.DrawWireSphere(curr.position, 0.015f);
-                if (curr.parent != null && curr.parent != transform) {
-                    Gizmos.DrawLine(curr.position, curr.parent.position);
-                }
+                if (curr.parent != null && curr.parent != transform) Gizmos.DrawLine(curr.position, curr.parent.position);
             }
         }
     }
-    
-    private int si_safe(int i) { return Mathf.Clamp(i, 0, segments.Length-1); }
 
-    // Geometry Helpers
     private Vector3 CalculateParallelTransport(Vector3 T, ref Vector3 Np, ref Vector3 Bp) { Vector3 N = Np - T * Vector3.Dot(T, Np); if (N.sqrMagnitude < 1e-6f) N = Vector3.Cross(T, Vector3.up); N.Normalize(); Np = N; Bp = Vector3.Cross(T, N); return N; }
     private float GetSampledValue(float[] table, float t) { return table[Mathf.Clamp((int)(t * 99f), 0, 99)]; }
-    void BuildFlat(Vector3 c, Color col, ref int v, out int ci, ref Vector3 mi, ref Vector3 ma) { ci = v; AddVertex(c, new Vector2(0.5f, 0.5f), col, Vector3.up, ref v, ref mi, ref ma); }
-    void BuildPoint(Vector3 c, Vector3 d, float s, float r, Color col, ref int v, out int ti, ref Vector3 mi, ref Vector3 ma) { ti = v; AddVertex(c + d.normalized * (r * s), new Vector2(0.5f, 1f), col, d, ref v, ref mi, ref ma); }
+    void BuildFlat(Vector3 c, Color col, ref int v, out int ci, ref Vector3 mi, ref Vector3 ma) { ci = v; AddVertex(c, new Vector2(0.5f, 0.5f), 0f, col, Vector3.up, ref v, ref mi, ref ma); }
+    void BuildPoint(Vector3 c, Vector3 d, float s, float r, Color col, ref int v, out int ti, ref Vector3 mi, ref Vector3 ma) { ti = v; AddVertex(c + d.normalized * (r * s), new Vector2(0.5f, 1f), 1f, col, d, ref v, ref mi, ref ma); }
     void BuildFan(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = rS + (j + 1) % r; tris[t++] = ci; } }
     void BuildFanRev(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = ci; tris[t++] = rS + (j + 1) % r; } }
     void BuildSphere(Vector3 c, CapSettings cp, Color col, Vector3 ax, Vector3 fN, Vector3 fB, ref int v, ref int t, ref Vector3 mi, ref Vector3 ma) {
@@ -315,7 +321,7 @@ public class TubeBuilderRenderer : MonoBehaviour
             float ty = (float)iy / res, th = (ty - 0.5f) * Mathf.PI, cy = Mathf.Cos(th), sy = Mathf.Sin(th);
             for (int ix = 0; ix < g; ix++) {
                 float tx = (float)ix / res, ph = tx * Mathf.PI * 2f; Vector3 nL = new Vector3(Mathf.Cos(ph) * cy, sy, Mathf.Sin(ph) * cy);
-                AddVertex(c + (fN * nL.x + ax * nL.y + fB * nL.z) * cp.sphereRadius, new Vector2(tx, ty), col, ax, ref v, ref mi, ref ma);
+                AddVertex(c + (fN * nL.x + ax * nL.y + fB * nL.z) * cp.sphereRadius, new Vector2(tx, ty), ty, col, ax, ref v, ref mi, ref ma);
             }
         }
         for (int iy = 0; iy < res; iy++) { int rA = bV + iy * g, rB = bV + (iy + 1) * g; for (int ix = 0; ix < res; ix++) { tris[t++] = rA + ix; tris[t++] = rA + ix + 1; tris[t++] = rB + ix; tris[t++] = rA + ix + 1; tris[t++] = rB + ix + 1; tris[t++] = rB + ix; } }
@@ -324,19 +330,20 @@ public class TubeBuilderRenderer : MonoBehaviour
         int cB = v, lat = Mathf.Max(2, cp.segments);
         for (int i = 1; i < lat; i++) {
             float tL = (float)i / lat, th = tL * Mathf.PI * 0.5f, rad = r * Mathf.Pow(Mathf.Cos(th), cp.bulge), h = r * Mathf.Sin(th) * cp.scale;
-            for (int j = 0; j < ring; j++) { float ph = (j / (float)ring) * Mathf.PI * 2f; AddVertex(c + (fN * Mathf.Cos(ph) + fB * Mathf.Sin(ph)) * rad + ax * h, new Vector2(j / (float)ring, tL), col, ax, ref v, ref mi, ref ma); }
+            for (int j = 0; j < ring; j++) { float ph = (j / (float)ring) * Mathf.PI * 2f; AddVertex(c + (fN * Mathf.Cos(ph) + fB * Mathf.Sin(ph)) * rad + ax * h, new Vector2(j / (float)ring, tL), isS ? (1f-tL) : tL, col, ax, ref v, ref mi, ref ma); }
         }
         for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; if (isS) { tris[t++] = rS + j; tris[t++] = cB + j; tris[t++] = cB + j1; tris[t++] = rS + j; tris[t++] = cB + j1; tris[t++] = rS + j1; } else { tris[t++] = rS + j; tris[t++] = cB + j1; tris[t++] = cB + j; tris[t++] = rS + j; tris[t++] = rS + j1; tris[t++] = cB + j1; } }
         for (int i = 0; i < lat - 2; i++) { int rA = cB + i * ring, rB = rA + ring; for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; if(isS){ tris[t++] = rA + j; tris[t++] = rB + j; tris[t++] = rB + j1; tris[t++] = rA + j; tris[t++] = rB + j1; tris[t++] = rA + j1; } else { tris[t++] = rA + j; tris[t++] = rB + j1; tris[t++] = rB + j; tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j1; } } }
-        int pI = v; AddVertex(c + ax * (r * cp.scale), new Vector2(0.5f, 1f), col, ax, ref v, ref mi, ref ma);
+        int pI = v; AddVertex(c + ax * (r * cp.scale), new Vector2(0.5f, 1f), isS ? 0f : 1f, col, ax, ref v, ref mi, ref ma);
         int lS = cB + (lat - 2) * ring; for (int j = 0; j < ring; j++) { tris[t++] = lS + j; if (isS) { tris[t++] = pI; tris[t++] = lS + (j + 1) % ring; } else { tris[t++] = lS + (j + 1) % ring; tris[t++] = pI; } }
     }
     int GetCapVertCount(CapSettings cp, int r) { if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return r + 1; if (cp.type == TubeCapType.Rounded) return (Mathf.Max(2, cp.segments) * r + 1 + r); if (cp.type == TubeCapType.FullSphere) { int g = Mathf.Max(3, cp.sphereResolution) + 1; return g * g; } return 0; }
     int GetCapTriCount(CapSettings cp, int r) { if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return r * 3; if (cp.type == TubeCapType.Rounded) return Mathf.Max(2, cp.segments) * r * 6 + r * 3; if (cp.type == TubeCapType.FullSphere) { int res = Mathf.Max(3, cp.sphereResolution); return res * res * 6; } return 0; }
+    
     void ApplyBoneWeights(int sV, int eV, TubeSegment s, int bI) {
         if (!s.useBones) { for (int i = sV; i < eV; i++) { weights[i].boneIndex0 = 0; weights[i].weight0 = 1f; } return; }
         for (int i = sV; i < eV; i++) {
-            float t = Mathf.Clamp01((uvs[i].y + s.blendOffset) * s.blendScaler); float bT = t * (s.bonesPerSegment - 1); int bA = Mathf.FloorToInt(bT), bB = Mathf.Clamp(bA + 1, 0, s.bonesPerSegment - 1); float wB = bT - bA;
+            float t = Mathf.Clamp01((vertNormalizedV[i] + s.blendOffset) * s.blendScaler); float bT = t * (s.bonesPerSegment - 1); int bA = Mathf.FloorToInt(bT), bB = Mathf.Clamp(bA + 1, 0, s.bonesPerSegment - 1); float wB = bT - bA;
             weights[i].boneIndex0 = bI + bA; weights[i].weight0 = 1f - wB; weights[i].boneIndex1 = bI + bB; weights[i].weight1 = wB;
         }
     }
