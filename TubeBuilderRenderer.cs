@@ -89,9 +89,58 @@ public class TubeBuilderRenderer : MonoBehaviour
     private float[] sampledRadius;
     private float[] sampledShape;
 
-    // Persistent Frame for Smoothing
     private Vector3 globalNprev;
     private Vector3 globalBprev;
+
+    // ==========================================
+    // ANIMATION API (C# 4.0 SAFE)
+    // ==========================================
+
+    /// <summary>Sets the local position of a control point (0=P0, 1=P1, 2=P2)</summary>
+    public void SetPoint(int segmentIndex, int pointIndex, Vector3 localPosition)
+    {
+        if (segmentIndex < 0 || segmentIndex >= segments.Length) return;
+        
+        if (pointIndex == 0) segments[segmentIndex].p0 = localPosition;
+        else if (pointIndex == 1) segments[segmentIndex].p1 = localPosition;
+        else if (pointIndex == 2) segments[segmentIndex].p2 = localPosition;
+        
+        MarkDirty();
+    }
+
+    /// <summary>Offsets the local position of a control point additively</summary>
+    public void OffsetPoint(int segmentIndex, int pointIndex, Vector3 offset)
+    {
+        if (segmentIndex < 0 || segmentIndex >= segments.Length) return;
+
+        if (pointIndex == 0) segments[segmentIndex].p0 += offset;
+        else if (pointIndex == 1) segments[segmentIndex].p1 += offset;
+        else if (pointIndex == 2) segments[segmentIndex].p2 += offset;
+
+        MarkDirty();
+    }
+
+    /// <summary>Moves all three points of a segment by an offset</summary>
+    public void MoveSegment(int segmentIndex, Vector3 offset)
+    {
+        if (segmentIndex < 0 || segmentIndex >= segments.Length) return;
+        segments[segmentIndex].p0 += offset;
+        segments[segmentIndex].p1 += offset;
+        segments[segmentIndex].p2 += offset;
+        MarkDirty();
+    }
+
+    public Vector3 GetPoint(int segmentIndex, int pointIndex)
+    {
+        if (segmentIndex < 0 || segmentIndex >= segments.Length) return Vector3.zero;
+        if (pointIndex == 0) return segments[segmentIndex].p0;
+        if (pointIndex == 1) return segments[segmentIndex].p1;
+        return segments[segmentIndex].p2;
+    }
+
+    // ==========================================
+    // CORE ENGINE
+    // ==========================================
 
     public void MarkDirty() { isDirty = true; }
 
@@ -142,6 +191,11 @@ public class TubeBuilderRenderer : MonoBehaviour
         if (curve == null || curve.length == 0) { for (int i = 0; i < 100; i++) sample[i] = 1f; return sample; }
         for (int i = 0; i < 100; i++) sample[i] = curve.Evaluate(i / 99f);
         return sample;
+    }
+
+    private float GetSampledValue(float[] table, float t)
+    {
+        return table[Mathf.Clamp((int)(t * 99f), 0, 99)];
     }
 
     public void Rebuild()
@@ -204,12 +258,9 @@ public class TubeBuilderRenderer : MonoBehaviour
                 curveTan[i] = (d.sqrMagnitude < 1e-6f) ? Vector3.forward : d.normalized;
             }
 
-            // CROSS-SEGMENT SMOOTHING LOGIC
             if (isFirstSegment || !s.connectToPrevious)
             {
-                // Reset frame for new disconnected tubes
-                Vector3 T0 = curveTan[0];
-                Vector3 refDir = (s.p1 - s.p0);
+                Vector3 T0 = curveTan[0], refDir = (s.p1 - s.p0);
                 refDir -= T0 * Vector3.Dot(T0, refDir);
                 if (refDir.sqrMagnitude < 1e-6f) refDir = Vector3.Cross(T0, Vector3.up);
                 refDir.Normalize();
@@ -218,11 +269,7 @@ public class TubeBuilderRenderer : MonoBehaviour
                 isFirstSegment = false;
             }
 
-            // Bone setup now happens AFTER the initial frame is established
-            if (s.useBones) { 
-                boneIdx = allBones.Count; 
-                globalLastBone = SetupSegmentBones(si, ref allBones, ref bindPoses, globalLastBone, globalNprev); 
-            }
+            if (s.useBones) { boneIdx = allBones.Count; globalLastBone = SetupSegmentBones(si, ref allBones, ref bindPoses, globalLastBone, globalNprev); }
 
             Vector3 startN = globalNprev; Vector3 startB = globalBprev;
             int firstRingIdx = -1, lastRingIdx = -1;
@@ -235,14 +282,12 @@ public class TubeBuilderRenderer : MonoBehaviour
                         float tc0 = (float)i / (seg - 1), tc1 = (float)(i + 1) / (seg - 1);
                         float v0 = (s.uvMapping == UVMappingType.WorldSpace) ? accumulatedDist : tc0;
                         float v1 = (s.uvMapping == UVMappingType.WorldSpace) ? (accumulatedDist + dist) : tc1;
-
                         Vector3 T0c = curveTan[i], T1c = curveTan[i+1];
                         Vector3 N0 = (i == 0) ? startN : CalculateParallelTransport(T0c, ref globalNprev, ref globalBprev);
                         Vector3 B0 = Vector3.Cross(T0c, N0);
                         Vector3 N1 = CalculateParallelTransport(T1c, ref globalNprev, ref globalBprev);
                         Vector3 B1 = Vector3.Cross(T1c, N1);
                         float r0 = GetSampledValue(sampledRadius, tc0), r1 = GetSampledValue(sampledRadius, tc1);
-
                         for (int j = 0; j < ring; j++) {
                             int j1 = (j + 1) % ring;
                             float rs0 = GetSampledValue(sampledShape, (float)j/ring), rs1 = GetSampledValue(sampledShape, (float)j1/ring);
@@ -280,7 +325,6 @@ public class TubeBuilderRenderer : MonoBehaviour
                 }
             }
 
-            // Cap Building
             if (s.startCap.type != TubeCapType.None) {
                 if (s.startCap.type == TubeCapType.Flat) { int ci; BuildFlat(curvePos[0], s.startColor, ref v, out ci, ref minB, ref maxB); if (firstRingIdx >= 0) BuildFanRev(ci, firstRingIdx, ring, ref t); }
                 else if (s.startCap.type == TubeCapType.Rounded) { if (firstRingIdx >= 0) BuildRoundedCap(verts, firstRingIdx, curvePos[0], GetSampledValue(sampledRadius, 0f), ring, s.startCap, -curveTan[0], startN, startB, s.startColor, true, ref v, ref t, ref minB, ref maxB); }
@@ -327,12 +371,10 @@ public class TubeBuilderRenderer : MonoBehaviour
     }
 
     private Vector3 CalculateParallelTransport(Vector3 T, ref Vector3 Np, ref Vector3 Bp) { Vector3 N = Np - T * Vector3.Dot(T, Np); if (N.sqrMagnitude < 1e-6f) N = Vector3.Cross(T, Vector3.up); N.Normalize(); Np = N; Bp = Vector3.Cross(T, N); return N; }
-    private float GetSampledValue(float[] table, float t) { return table[Mathf.Clamp((int)(t * 99f), 0, 99)]; }
     void BuildFlat(Vector3 c, Color col, ref int v, out int ci, ref Vector3 mi, ref Vector3 ma) { ci = v; AddVertex(c, new Vector2(0.5f, 0.5f), 0f, col, Vector3.up, ref v, ref mi, ref ma); }
     void BuildPoint(Vector3 c, Vector3 d, float s, float r, Color col, ref int v, out int ti, ref Vector3 mi, ref Vector3 ma) { ti = v; AddVertex(c + d.normalized * (r * s), new Vector2(0.5f, 1f), 1f, col, d, ref v, ref mi, ref ma); }
     void BuildFan(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = rS + (j + 1) % r; tris[t++] = ci; } }
     void BuildFanRev(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = ci; tris[t++] = rS + (j + 1) % r; } }
-    
     void BuildSphere(Vector3 c, CapSettings cp, Color col, Vector3 ax, Vector3 fN, Vector3 fB, ref int v, ref int t, ref Vector3 mi, ref Vector3 ma) {
         int res = Mathf.Max(3, cp.sphereResolution); int g = res + 1; int bV = v;
         for (int iy = 0; iy < g; iy++) {
@@ -358,40 +400,21 @@ public class TubeBuilderRenderer : MonoBehaviour
     int GetCapVertCount(CapSettings cp, int r) { if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return r + 1; if (cp.type == TubeCapType.Rounded) return (Mathf.Max(2, cp.segments) * r + 1 + r); if (cp.type == TubeCapType.FullSphere) { int g = Mathf.Max(3, cp.sphereResolution) + 1; return g * g; } return 0; }
     int GetCapTriCount(CapSettings cp, int r) { if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return r * 3; if (cp.type == TubeCapType.Rounded) return Mathf.Max(2, cp.segments) * r * 6 + r * 3; if (cp.type == TubeCapType.FullSphere) { int res = Mathf.Max(3, cp.sphereResolution); return res * res * 6; } return 0; }
     
-    void ApplyBoneWeights(int sV, int eV, TubeSegment s, int bI) {
-        if (!s.useBones) { for (int i = sV; i < eV; i++) { weights[i].boneIndex0 = 0; weights[i].weight0 = 1f; } return; }
-        for (int i = sV; i < eV; i++) {
-            float t = Mathf.Clamp01((vertNormalizedV[i] + s.blendOffset) * s.blendScaler); float bT = t * (s.bonesPerSegment - 1); int bA = Mathf.FloorToInt(bT), bB = Mathf.Clamp(bA + 1, 0, s.bonesPerSegment - 1); float wB = bT - bA;
-            weights[i].boneIndex0 = bI + bA; weights[i].weight0 = 1f - wB; weights[i].boneIndex1 = bI + bB; weights[i].weight1 = wB;
-        }
-    }
-
     Transform SetupSegmentBones(int si, ref List<Transform> allB, ref List<Matrix4x4> bp, Transform lastB, Vector3 startN) {
         int ct = Mathf.Max(1, segments[si].bonesPerSegment); if (segments[si].boneInstances == null) segments[si].boneInstances = new List<Transform>();
         while (segments[si].boneInstances.Count > ct) { if (segments[si].boneInstances[0]) DestroyImmediate(segments[si].boneInstances[0].gameObject); segments[si].boneInstances.RemoveAt(0); }
         while (segments[si].boneInstances.Count < ct) { GameObject go = new GameObject("Bone"); go.transform.parent = transform; segments[si].boneInstances.Add(go.transform); }
-        
         Vector3 localN = startN;
-        Vector3 localB = Vector3.Cross(GetBezierTangent(segments[si], 0f), localN);
-
         for (int b = 0; b < ct; b++) {
             float t = (float)b / (ct > 1 ? (float)(ct - 1) : 1.0f); Transform bone = segments[si].boneInstances[b];
             Vector3 tan = GetBezierTangent(segments[si], t);
-            
-            // Transport frame to bone position
             localN = localN - tan * Vector3.Dot(tan, localN); localN.Normalize();
-            localB = Vector3.Cross(tan, localN);
-
-            bone.localPosition = GetBezierPoint(segments[si], t); 
-            bone.localRotation = Quaternion.LookRotation(tan, localN); // Use Smoothed Normal as Up-vector
-            
-            bone.name = segments[si].name + "_B" + b; 
-            if (segments[si].useNestedChain) { bone.SetParent(lastB == null ? transform : lastB); lastB = bone; } else { bone.SetParent(transform); }
+            bone.localPosition = GetBezierPoint(segments[si], t); bone.localRotation = Quaternion.LookRotation(tan, localN);
+            bone.name = segments[si].name + "_B" + b; if (segments[si].useNestedChain) { bone.SetParent(lastB == null ? transform : lastB); lastB = bone; } else { bone.SetParent(transform); }
             allB.Add(bone); bp.Add(bone.worldToLocalMatrix * transform.localToWorldMatrix);
         }
         return lastB;
     }
-
     Vector3 GetBezierPoint(TubeSegment s, float t) { Vector3 m0 = Vector3.Lerp(s.p0, s.p1, t), m1 = Vector3.Lerp(s.p1, s.p2, t); return Vector3.Lerp(m0, m1, t); }
     Vector3 GetBezierTangent(TubeSegment s, float t) { return (2f * (1f - t) * (s.p1 - s.p0) + 2f * t * (s.p2 - s.p1)).normalized; }
     void SyncRenderer(bool skin) { if (wasSkinningActive == skin) return; if (skin) { if (GetComponent<MeshRenderer>()) DestroyImmediate(GetComponent<MeshRenderer>()); if (GetComponent<MeshFilter>()) DestroyImmediate(GetComponent<MeshFilter>()); if (!GetComponent<SkinnedMeshRenderer>()) gameObject.AddComponent<SkinnedMeshRenderer>(); } else { if (GetComponent<SkinnedMeshRenderer>()) DestroyImmediate(GetComponent<SkinnedMeshRenderer>()); if (!GetComponent<MeshFilter>()) gameObject.AddComponent<MeshFilter>(); if (!GetComponent<MeshRenderer>()) gameObject.AddComponent<MeshRenderer>(); } wasSkinningActive = skin; }
