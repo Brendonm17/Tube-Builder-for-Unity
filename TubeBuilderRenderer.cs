@@ -5,13 +5,17 @@ using System;
 [ExecuteInEditMode]
 public class TubeBuilderRenderer : MonoBehaviour
 {
-    public enum TubeCapType
+    public enum TubeCapType { None, Flat, Point, Rounded, FullSphere }
+
+    [System.Serializable]
+    public struct CapSettings
     {
-        None,
-        Flat,
-        Point,
-        Rounded,
-        FullSphere
+        public TubeCapType type;
+        public float scale;
+        public float bulge;
+        public int segments;
+        public int sphereResolution;
+        public float sphereRadius;
     }
 
     [System.Serializable]
@@ -20,35 +24,31 @@ public class TubeBuilderRenderer : MonoBehaviour
         public string name;
         public bool enabled;
 
+        [Header("Path")]
         public Vector3 p0;
         public Vector3 p1;
         public Vector3 p2;
-
-        public Color startColor;
-        public Color endColor;
-
         public int segments;
         public int radialSegments;
-
-        public AnimationCurve radiusProfile;
-
-        public TubeCapType capStart;
-        public TubeCapType capEnd;
-
-        public float bulgePower;
-
-        public float sphereRadius;
-        public int roundedCapSegments;
         public float twist;
 
+        [Header("Caps")]
+        public CapSettings startCap;
+        public CapSettings endCap;
+
+        [Header("Visuals")]
+        public AnimationCurve radiusProfile;
+        public AnimationCurve radialShapeCurve;
+        public bool useHardEdges;
+        public Vector2 uvTiling;
+        public Vector2 uvOffset;
+        public Color startColor;
+        public Color endColor;
         public bool generateTube;
         public float colorLerpOffset;
         public float colorLerpScale;
 
-        public int colorCutoffSegment; 
-
-        public float capScale; 
-
+        [Header("Bones")]
         public bool useBones;
         public int bonesPerSegment;
         public bool useNestedChain;
@@ -56,15 +56,15 @@ public class TubeBuilderRenderer : MonoBehaviour
         public float blendScaler;
         
         [HideInInspector] 
-        public List<Transform> boneInstances; 
+        public List<Transform> boneInstances;
     }
 
     public TubeSegment[] segments;
     public Color gizmoCurveColor = Color.white;
     public bool showWeightsDebug;
+    public bool autoRebuild = true;
 
     private Mesh mesh;
-
     private Vector3[] verts = new Vector3[0];
     private Vector2[] uvs = new Vector2[0];
     private Color[] colors = new Color[0];
@@ -73,53 +73,40 @@ public class TubeBuilderRenderer : MonoBehaviour
 
     private Vector3[] curvePos = new Vector3[0];
     private Vector3[] curveTan = new Vector3[0];
-
-    private int[] ringStarts = new int[0];
+    
+    private bool isDirty = true;
     private bool wasSkinningActive = false;
 
-    static Color LerpColor(Color a, Color b, float t)
-    {
-        return new Color(
-            a.r + (b.r - a.r) * t,
-            a.g + (b.g - a.g) * t,
-            a.b + (b.b - a.b) * t,
-            a.a + (b.a - a.a) * t
-        );
-    }
+    private float[] radialSin;
+    private float[] radialCos;
 
-    void EnsureCurveBuffers(int seg)
-    {
-        if (curvePos.Length != seg)
-        {
-            curvePos = new Vector3[seg];
-            curveTan = new Vector3[seg];
-        }
-    }
+    public void MarkDirty() { isDirty = true; }
 
-    void EnsureRingStarts(int count)
-    {
-        if (ringStarts.Length < count)
-            ringStarts = new int[count];
-    }
-
-    int LatSeg(int ring)
-    {
-        return Mathf.Clamp(ring / 2, 2, 8);
-    }
-
-    void Awake()
-    {
-        EnsureMesh();
-    }
-
-    void OnEnable()
-    {
-        Rebuild();
-    }
+    void Awake() { EnsureMesh(); }
+    void OnEnable() { MarkDirty(); }
 
     void Update()
     {
-        Rebuild();
+        if (isDirty && autoRebuild)
+        {
+            Rebuild();
+            isDirty = false;
+        }
+    }
+
+    private void PrecomputeRadialTable(int radialCount)
+    {
+        if (radialSin == null || radialSin.Length != radialCount)
+        {
+            radialSin = new float[radialCount];
+            radialCos = new float[radialCount];
+            for (int i = 0; i < radialCount; i++)
+            {
+                float angle = (i / (float)radialCount) * Mathf.PI * 2f;
+                radialSin[i] = Mathf.Sin(angle);
+                radialCos[i] = Mathf.Cos(angle);
+            }
+        }
     }
 
     public void Rebuild()
@@ -130,242 +117,130 @@ public class TubeBuilderRenderer : MonoBehaviour
             return;
         }
 
-        // Pass 0: Check for any active bones (No Linq)
         bool anyBones = false;
-        for (int i = 0; i < segments.Length; i++)
-        {
-            if (segments[i].enabled && segments[i].useBones)
-            {
-                anyBones = true;
-                break;
-            }
+        for (int i = 0; i < segments.Length; i++) {
+            if (segments[i].enabled && segments[i].useBones) { anyBones = true; break; }
         }
 
         SyncRenderer(anyBones);
         EnsureMesh();
 
-        int totalV = 0;
-        int totalT = 0;
-
-        // Pass 1: count vertices and triangles
+        int totalV = 0; int totalT = 0;
         for (int i = 0; i < segments.Length; i++)
         {
             TubeSegment s = segments[i];
             if (!s.enabled) continue;
-
-            int seg = Mathf.Max(2, s.segments);
             int ring = Mathf.Max(3, s.radialSegments);
-            int lat = s.roundedCapSegments > 0 ? Mathf.Max(2, s.roundedCapSegments) : LatSeg(ring);
-
-            bool fullSphere = (s.capStart == TubeCapType.FullSphere && s.capEnd == TubeCapType.FullSphere && s.segments <= 1);
-
-            if (fullSphere)
-            {
-                int g = ring + 1;
-                totalV += g * g;
-                totalT += ring * ring * 6;
-                continue;
-            }
+            int seg = Mathf.Max(2, s.segments);
 
             if (s.generateTube)
             {
-                bool hardCut = (s.colorCutoffSegment > 0 && s.colorCutoffSegment < seg);
-                int ringCount = seg + (hardCut ? 1 : 0);
-                totalV += ringCount * ring;
-                totalT += (ringCount - 1) * ring * 6;
+                if (s.useHardEdges) { totalV += (seg - 1) * ring * 4; totalT += (seg - 1) * ring * 6; }
+                else { totalV += seg * ring; totalT += (seg - 1) * ring * 6; }
             }
 
-            // Start cap
-            if (s.capStart == TubeCapType.Flat || s.capStart == TubeCapType.Point) { totalV += (ring + 1); totalT += ring * 3; }
-            else if (s.capStart == TubeCapType.Rounded) { totalV += (lat * ring + 1 + ring); totalT += lat * ring * 6 + ring * 3; }
-            else if (s.capStart == TubeCapType.FullSphere) { int g = ring + 1; totalV += g * g; totalT += ring * ring * 6; }
-
-            // End cap
-            if (s.capEnd == TubeCapType.Flat || s.capEnd == TubeCapType.Point) { totalV += (ring + 1); totalT += ring * 3; }
-            else if (s.capEnd == TubeCapType.Rounded) { totalV += (lat * ring + 1 + ring); totalT += lat * ring * 6 + ring * 3; }
-            else if (s.capEnd == TubeCapType.FullSphere) { int g = ring + 1; totalV += g * g; totalT += ring * ring * 6; }
+            totalV += GetCapVertCount(s.startCap, ring);
+            totalT += GetCapTriCount(s.startCap, ring);
+            totalV += GetCapVertCount(s.endCap, ring);
+            totalT += GetCapTriCount(s.endCap, ring);
         }
 
-        if (verts.Length < totalV)
-        {
-            verts = new Vector3[totalV];
-            uvs = new Vector2[totalV];
-            colors = new Color[totalV];
-            weights = new BoneWeight[totalV];
+        if (verts.Length < totalV) {
+            verts = new Vector3[totalV]; uvs = new Vector2[totalV]; colors = new Color[totalV]; weights = new BoneWeight[totalV];
         }
         if (tris.Length < totalT) tris = new int[totalT];
 
-        int v = 0;
-        int t = 0;
-
+        int v = 0; int t = 0;
         List<Transform> allBones = new List<Transform>();
         List<Matrix4x4> bindPoses = new List<Matrix4x4>();
-        
-        // Bone 0: Root Static
         allBones.Add(this.transform);
         bindPoses.Add(this.transform.worldToLocalMatrix * transform.localToWorldMatrix);
 
         Transform globalLastBone = null;
 
-        // Pass 2: build geometry
         for (int si = 0; si < segments.Length; si++)
         {
             TubeSegment s = segments[si];
             if (!s.enabled) continue;
-
-            int vStart = v; 
-            int boneStartGlobalIdx = 0;
-
-            if (s.useBones)
-            {
-                boneStartGlobalIdx = allBones.Count;
+            int vStart = v;
+            int boneStartIdx = 0;
+            if (s.useBones) {
+                boneStartIdx = allBones.Count;
                 globalLastBone = SetupSegmentBones(si, ref allBones, ref bindPoses, globalLastBone);
             }
 
+            PrecomputeRadialTable(s.radialSegments);
             int seg = Mathf.Max(2, s.segments);
-            int ring = Mathf.Max(3, s.radialSegments);
-            int latSeg = s.roundedCapSegments > 0 ? Mathf.Max(2, s.roundedCapSegments) : LatSeg(ring);
-
-            Color startColor = s.startColor;
-            Color endColor = s.endColor;
-
-            bool fullSphere = (s.capStart == TubeCapType.FullSphere && s.capEnd == TubeCapType.FullSphere && s.segments <= 1);
-
-            if (fullSphere)
-            {
-                float rSphere = s.sphereRadius > 0f ? s.sphereRadius : (s.radiusProfile != null ? s.radiusProfile.Evaluate(0f) : 0.03f);
-                Vector3 P0_fs = s.p0; Vector3 P1_fs = s.p1; Vector3 P2_fs = s.p2;
-                Vector3 d_fs = P0_fs * (-2f) + P1_fs * (2f);
-                if (d_fs.sqrMagnitude < 1e-6f) d_fs = Vector3.forward;
-                Vector3 T_fs = d_fs.normalized;
-                Vector3 refDir_fs = P1_fs - P0_fs;
-                refDir_fs -= T_fs * Vector3.Dot(T_fs, refDir_fs);
-                if (refDir_fs.sqrMagnitude < 1e-6f) refDir_fs = Vector3.Cross(T_fs, Vector3.up);
-                refDir_fs.Normalize();
-                Vector3 N_fs = refDir_fs; Vector3 B_fs = Vector3.Cross(T_fs, N_fs);
-                BuildSphere(s.p0, rSphere, ring, startColor, T_fs, N_fs, B_fs, 0f, ref v, ref t);
-                ApplyBoneWeights(vStart, v, s, boneStartGlobalIdx);
-                continue;
-            }
+            int ring = s.radialSegments;
 
             EnsureCurveBuffers(seg);
-            Vector3 P0 = s.p0; Vector3 P1 = s.p1; Vector3 P2 = s.p2;
             float inv = 1f / (seg - 1);
-            for (int i = 0; i < seg; i++)
-            {
+            for (int i = 0; i < seg; i++) {
                 float tt = i * inv; float omt = 1f - tt;
-                curvePos[i] = P0 * (omt * omt) + P1 * (2f * omt * tt) + P2 * (tt * tt);
-                Vector3 d = P0 * (-2f * omt) + P1 * (2f - 4f * tt) + P2 * (2f * tt);
-                if (d.sqrMagnitude < 1e-6f) d = Vector3.forward;
-                curveTan[i] = d.normalized;
+                curvePos[i] = s.p0 * (omt * omt) + s.p1 * (2f * omt * tt) + s.p2 * (tt * tt);
+                Vector3 d = s.p0 * (-2f * omt) + s.p1 * (2f - 4f * tt) + s.p2 * (2f * tt);
+                curveTan[i] = (d.sqrMagnitude < 1e-6f) ? Vector3.forward : d.normalized;
             }
 
-            Vector3 T0 = curveTan[0]; Vector3 refDir = P1 - P0;
+            Vector3 T0 = curveTan[0], refDir = (s.p1 - s.p0);
             refDir -= T0 * Vector3.Dot(T0, refDir);
             if (refDir.sqrMagnitude < 1e-6f) refDir = Vector3.Cross(T0, Vector3.up);
             refDir.Normalize();
-            Vector3 Nprev = refDir; Vector3 Bprev = Vector3.Cross(T0, Nprev);
-            Vector3 startN = Nprev; Vector3 startB = Bprev;
+            Vector3 Nprev = refDir, Bprev = Vector3.Cross(T0, Nprev);
+            Vector3 startN = Nprev, startB = Bprev;
 
-            int cutIndex = s.colorCutoffSegment;
-            bool hardCut = (cutIndex > 0 && cutIndex < seg);
-            bool hardCutAllEnd = (cutIndex == 0);
-            int firstRing = -1; int lastRing = -1;
+            int firstRingIdx = -1, lastRingIdx = -1;
 
             if (s.generateTube)
             {
-                int tubeBase = v;
-                if (hardCutAllEnd || !hardCut)
+                if (s.useHardEdges)
                 {
-                    for (int i = 0; i < seg; i++)
-                    {
-                        Vector3 Tcur = curveTan[i];
-                        Vector3 N, B;
-                        if (i == 0) { N = Nprev; B = Bprev; }
-                        else {
-                            Vector3 Np = Nprev - Tcur * Vector3.Dot(Tcur, Nprev);
-                            if (Np.sqrMagnitude < 1e-6f) Np = Vector3.Cross(Tcur, Vector3.up);
-                            N = Np.normalized; B = Vector3.Cross(Tcur, N);
-                            Nprev = N; Bprev = B;
-                        }
-                        float tc = seg > 1 ? (float)i / (seg - 1) : 0f;
-                        if (Mathf.Abs(s.twist) > 0.0001f) {
-                            Quaternion twistQ = Quaternion.AngleAxis(s.twist * tc, Tcur);
-                            N = twistQ * N; B = twistQ * B;
-                        }
-                        float rad = s.radiusProfile != null ? s.radiusProfile.Evaluate(tc) : 0.03f;
-                        Color cHere = hardCutAllEnd ? endColor : LerpColor(startColor, endColor, Mathf.Clamp01(tc * s.colorLerpScale + s.colorLerpOffset));
-                        int ringStart = v;
+                    for (int i = 0; i < seg - 1; i++) {
+                        float tc0 = (float)i / (seg - 1), tc1 = (float)(i + 1) / (seg - 1);
+                        Vector3 T0c = curveTan[i], T1c = curveTan[i+1];
+                        // Calculate Frames
+                        Vector3 N0 = (i == 0) ? startN : CalculateParallelTransport(T0c, ref Nprev, ref Bprev);
+                        Vector3 B0 = Vector3.Cross(T0c, N0);
+                        Vector3 N1 = CalculateParallelTransport(T1c, ref Nprev, ref Bprev);
+                        Vector3 B1 = Vector3.Cross(T1c, N1);
+
+                        float r0 = s.radiusProfile != null ? s.radiusProfile.Evaluate(tc0) : 0.03f;
+                        float r1 = s.radiusProfile != null ? s.radiusProfile.Evaluate(tc1) : 0.03f;
+
                         for (int j = 0; j < ring; j++) {
-                            float ang = (j / (float)ring) * Mathf.PI * 2f;
-                            verts[v] = curvePos[i] + (N * Mathf.Cos(ang) + B * Mathf.Sin(ang)) * rad;
-                            uvs[v] = new Vector2(j / (float)ring, tc);
-                            colors[v] = cHere; v++;
+                            int j1 = (j + 1) % ring;
+                            float rShape0 = s.radialShapeCurve != null ? s.radialShapeCurve.Evaluate((float)j / ring) : 1f;
+                            float rShape1 = s.radialShapeCurve != null ? s.radialShapeCurve.Evaluate((float)j1 / ring) : 1f;
+
+                            int bIdx = v;
+                            // Quad Verts
+                            AddVertex(curvePos[i] + (N0 * radialCos[j] + B0 * radialSin[j]) * r0 * rShape0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, tc0 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc0), ref v);
+                            AddVertex(curvePos[i] + (N0 * radialCos[j1] + B0 * radialSin[j1]) * r0 * rShape1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, tc0 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc0), ref v);
+                            AddVertex(curvePos[i+1] + (N1 * radialCos[j] + B1 * radialSin[j]) * r1 * rShape0, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, tc1 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc1), ref v);
+                            AddVertex(curvePos[i+1] + (N1 * radialCos[j1] + B1 * radialSin[j1]) * r1 * rShape1, new Vector2((float)(j+1)/ring * s.uvTiling.x + s.uvOffset.x, tc1 * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc1), ref v);
+                            // Tris
+                            tris[t++] = bIdx; tris[t++] = bIdx + 2; tris[t++] = bIdx + 1;
+                            tris[t++] = bIdx + 1; tris[t++] = bIdx + 2; tris[t++] = bIdx + 3;
                         }
-                        if (i == 0) firstRing = ringStart;
-                        if (i == seg - 1) lastRing = ringStart;
+                    }
+                }
+                else
+                {
+                    int tubeBase = v;
+                    for (int i = 0; i < seg; i++) {
+                        float tc = (float)i / (seg - 1);
+                        Vector3 T = curveTan[i], N = (i == 0) ? startN : CalculateParallelTransport(T, ref Nprev, ref Bprev), B = Vector3.Cross(T, N);
+                        if (Mathf.Abs(s.twist) > 0.001f) { Quaternion q = Quaternion.AngleAxis(s.twist * tc, T); N = q * N; B = q * B; }
+                        float rad = s.radiusProfile != null ? s.radiusProfile.Evaluate(tc) : 0.03f;
+                        int rS = v;
+                        for (int j = 0; j < ring; j++) {
+                            float rShape = s.radialShapeCurve != null ? s.radialShapeCurve.Evaluate((float)j/ring) : 1f;
+                            AddVertex(curvePos[i] + (N * radialCos[j] + B * radialSin[j]) * rad * rShape, new Vector2((float)j/ring * s.uvTiling.x + s.uvOffset.x, tc * s.uvTiling.y + s.uvOffset.y), Color.Lerp(s.startColor, s.endColor, tc), ref v);
+                        }
+                        if (i == 0) firstRingIdx = rS; if (i == seg - 1) lastRingIdx = rS;
                     }
                     for (int i = 0; i < seg - 1; i++) {
-                        int rA = tubeBase + i * ring; int rB = tubeBase + (i + 1) * ring;
-                        for (int j = 0; j < ring; j++) {
-                            int j1 = (j + 1) % ring;
-                            tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j;
-                            tris[t++] = rA + j1; tris[t++] = rB + j1; tris[t++] = rB + j;
-                        }
-                    }
-                }
-                else // Hard Cut
-                {
-                    int ringCount = 0; int seamRingIndex = -1; EnsureRingStarts(seg + 1);
-                    for (int i = 0; i < seg; i++) {
-                        Vector3 Tcur = curveTan[i]; Vector3 N, B;
-                        if (i == 0) { N = Nprev; B = Bprev; }
-                        else {
-                            Vector3 Np = Nprev - Tcur * Vector3.Dot(Tcur, Nprev);
-                            if (Np.sqrMagnitude < 1e-6f) Np = Vector3.Cross(Tcur, Vector3.up);
-                            N = Np.normalized; B = Vector3.Cross(Tcur, N);
-                            Nprev = N; Bprev = B;
-                        }
-                        float tc = seg > 1 ? (float)i / (seg - 1) : 0f;
-                        if (Mathf.Abs(s.twist) > 0.0001f) {
-                            Quaternion twistQ = Quaternion.AngleAxis(s.twist * tc, Tcur);
-                            N = twistQ * N; B = twistQ * B;
-                        }
-                        float rad = s.radiusProfile != null ? s.radiusProfile.Evaluate(tc) : 0.03f;
-                        if (i < cutIndex) {
-                            ringStarts[ringCount++] = v;
-                            for (int j = 0; j < ring; j++) {
-                                float ang = (j / (float)ring) * Mathf.PI * 2f;
-                                verts[v] = curvePos[i] + (N * Mathf.Cos(ang) + B * Mathf.Sin(ang)) * rad;
-                                uvs[v] = new Vector2(j / (float)ring, tc); colors[v] = startColor; v++;
-                            }
-                        } else if (i == cutIndex) {
-                            ringStarts[ringCount++] = v;
-                            for (int j = 0; j < ring; j++) {
-                                float ang = (j / (float)ring) * Mathf.PI * 2f;
-                                verts[v] = curvePos[i] + (N * Mathf.Cos(ang) + B * Mathf.Sin(ang)) * rad;
-                                uvs[v] = new Vector2(j / (float)ring, tc); colors[v] = startColor; v++;
-                            }
-                            seamRingIndex = ringCount - 1;
-                            ringStarts[ringCount++] = v;
-                            for (int j = 0; j < ring; j++) {
-                                float ang = (j / (float)ring) * Mathf.PI * 2f;
-                                verts[v] = curvePos[i] + (N * Mathf.Cos(ang) + B * Mathf.Sin(ang)) * rad;
-                                uvs[v] = new Vector2(j / (float)ring, tc); colors[v] = endColor; v++;
-                            }
-                        } else {
-                            ringStarts[ringCount++] = v;
-                            for (int j = 0; j < ring; j++) {
-                                float ang = (j / (float)ring) * Mathf.PI * 2f;
-                                verts[v] = curvePos[i] + (N * Mathf.Cos(ang) + B * Mathf.Sin(ang)) * rad;
-                                uvs[v] = new Vector2(j / (float)ring, tc); colors[v] = endColor; v++;
-                            }
-                        }
-                    }
-                    if (ringCount > 0) { firstRing = ringStarts[0]; lastRing = ringStarts[ringCount - 1]; }
-                    for (int k = 0; k < ringCount - 1; k++) {
-                        if (k == seamRingIndex) continue;
-                        int rA = ringStarts[k]; int rB = ringStarts[k + 1];
+                        int rA = tubeBase + i * ring, rB = tubeBase + (i + 1) * ring;
                         for (int j = 0; j < ring; j++) {
                             int j1 = (j + 1) % ring;
                             tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j;
@@ -375,96 +250,136 @@ public class TubeBuilderRenderer : MonoBehaviour
                 }
             }
 
-            Vector3 curT0 = curveTan[0]; Vector3 curT1 = curveTan[seg - 1];
-            if (s.capStart == TubeCapType.Flat) {
-                int ci; BuildFlat(curvePos[0], startColor, ref v, out ci);
-                if (firstRing >= 0) BuildFanRev(ci, firstRing, ring, ref t);
-            } else if (s.capStart == TubeCapType.Point) {
-                int ci; BuildPoint(curvePos[0], -curT0, s, 0f, startColor, ref v, out ci);
-                if (firstRing >= 0) BuildFanRev(ci, firstRing, ring, ref t);
-            } else if (s.capStart == TubeCapType.Rounded) {
-                if (firstRing >= 0) BuildRoundedCapStart_UsingTubeRing(verts, firstRing, curvePos[0], s.radiusProfile.Evaluate(0f), ring, latSeg, -curT0, startN, startB, startColor, s.capScale, s.bulgePower, ref v, ref t);
-            } else if (s.capStart == TubeCapType.FullSphere) {
-                BuildSphere(curvePos[0], s.sphereRadius, ring, startColor, curT0, startN, startB, 0f, ref v, ref t);
+            // Cap Building (Reuse logic from previous versions but using Struct data)
+            if (s.startCap.type == TubeCapType.Flat) {
+                int ci; BuildFlat(curvePos[0], s.startColor, ref v, out ci);
+                if (firstRingIdx >= 0) BuildFanRev(ci, firstRingIdx, ring, ref t);
+            } else if (s.startCap.type == TubeCapType.Rounded) {
+                if (firstRingIdx >= 0) BuildRoundedCap(verts, firstRingIdx, curvePos[0], s.radiusProfile.Evaluate(0f), ring, s.startCap, -curveTan[0], startN, startB, s.startColor, true, ref v, ref t);
+            } else if (s.startCap.type == TubeCapType.FullSphere) {
+                BuildSphere(curvePos[0], s.startCap, s.startColor, -curveTan[0], startN, startB, ref v, ref t);
+            }
+            // End Caps ... (Logic symmetric to Start Caps)
+            if (s.endCap.type == TubeCapType.Flat) {
+                int ci; BuildFlat(curvePos[seg-1], s.endColor, ref v, out ci);
+                if (lastRingIdx >= 0) BuildFan(ci, lastRingIdx, ring, ref t);
+            } else if (s.endCap.type == TubeCapType.Rounded) {
+                if (lastRingIdx >= 0) BuildRoundedCap(verts, lastRingIdx, curvePos[seg-1], s.radiusProfile.Evaluate(1f), ring, s.endCap, curveTan[seg-1], Nprev, Bprev, s.endColor, false, ref v, ref t);
+            } else if (s.endCap.type == TubeCapType.FullSphere) {
+                BuildSphere(curvePos[seg-1], s.endCap, s.endColor, curveTan[seg-1], Nprev, Bprev, ref v, ref t);
             }
 
-            if (s.capEnd == TubeCapType.Flat) {
-                int ci; BuildFlat(curvePos[seg - 1], endColor, ref v, out ci);
-                if (lastRing >= 0) BuildFan(ci, lastRing, ring, ref t);
-            } else if (s.capEnd == TubeCapType.Point) {
-                int ci; BuildPoint(curvePos[seg - 1], curT1, s, 1f, endColor, ref v, out ci);
-                if (lastRing >= 0) BuildFan(ci, lastRing, ring, ref t);
-            } else if (s.capEnd == TubeCapType.Rounded) {
-                if (lastRing >= 0) BuildRoundedCapEnd_UsingTubeRing(verts, lastRing, curvePos[seg - 1], s.radiusProfile.Evaluate(1f), ring, latSeg, curT1, Nprev, Bprev, s.twist, endColor, s.capScale, s.bulgePower, ref v, ref t);
-            } else if (s.capEnd == TubeCapType.FullSphere) {
-                BuildSphere(curvePos[seg - 1], s.sphereRadius, ring, endColor, curT1, Nprev, Bprev, s.twist, ref v, ref t);
-            }
-
-            ApplyBoneWeights(vStart, v, s, boneStartGlobalIdx);
+            ApplyBoneWeights(vStart, v, s, boneStartIdx);
         }
 
-        // Finalize Mesh Data (Manual Array Copy for No-LINQ / C# 4.0)
+        FinalizeMesh(v, t, anyBones, allBones, bindPoses);
+    }
+
+    private Vector3 CalculateParallelTransport(Vector3 T, ref Vector3 Nprev, ref Vector3 Bprev) {
+        Vector3 N = Nprev - T * Vector3.Dot(T, Nprev);
+        if (N.sqrMagnitude < 1e-6f) N = Vector3.Cross(T, Vector3.up);
+        N.Normalize(); Nprev = N; Bprev = Vector3.Cross(T, N);
+        return N;
+    }
+
+    private void AddVertex(Vector3 pos, Vector2 uv, Color col, ref int v) {
+        verts[v] = pos; uvs[v] = uv; colors[v] = col; v++;
+    }
+
+    private void FinalizeMesh(int v, int t, bool anyBones, List<Transform> bones, List<Matrix4x4> bindPoses) {
         Vector3[] fV = new Vector3[v]; Vector2[] fU = new Vector2[v]; Color[] fC = new Color[v]; int[] fT = new int[t];
         Array.Copy(verts, fV, v); Array.Copy(uvs, fU, v); Array.Copy(colors, fC, v); Array.Copy(tris, fT, t);
 
-        // Debug Weights Over Vertex Colors
         if (showWeightsDebug && anyBones) {
-            for (int i = 0; i < v; i++) {
-                float w = weights[i].weight0;
-                fC[i] = new Color(w, 0, 1f - w, 1f); // Heatmap: Red = Max, Blue = Min
-            }
+            for (int i = 0; i < v; i++) fC[i] = new Color(weights[i].weight0, 0, 1f - weights[i].weight0, 1f);
         }
 
         mesh.Clear(); mesh.vertices = fV; mesh.uv = fU; mesh.colors = fC; mesh.triangles = fT;
-
         if (anyBones) {
             BoneWeight[] fW = new BoneWeight[v]; Array.Copy(weights, fW, v);
             mesh.boneWeights = fW; mesh.bindposes = bindPoses.ToArray();
-            GetComponent<SkinnedMeshRenderer>().bones = allBones.ToArray();
+            GetComponent<SkinnedMeshRenderer>().bones = bones.ToArray();
         }
-
         mesh.RecalculateNormals(); mesh.bounds = new Bounds(Vector3.zero, Vector3.one * 9999f);
     }
 
-    void ApplyBoneWeights(int start, int end, TubeSegment s, int boneIdx)
-    {
-        if (!s.useBones) {
-            for (int i = start; i < end; i++) { weights[i].boneIndex0 = 0; weights[i].weight0 = 1f; }
-            return;
+    // Geometry Helpers ... [BuildSphere, BuildFlat, BuildFan, etc from previous un-omitted version] ...
+    void BuildFlat(Vector3 c, Color col, ref int v, out int ci) { ci = v; AddVertex(c, new Vector2(0.5f, 0.5f), col, ref v); }
+    void BuildPoint(Vector3 c, Vector3 dir, float sc, float rad, Color col, ref int v, out int ti) { ti = v; AddVertex(c + dir.normalized * (rad * sc), new Vector2(0.5f, 1f), col, ref v); }
+    void BuildFan(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = rS + (j + 1) % r; tris[t++] = ci; } }
+    void BuildFanRev(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = ci; tris[t++] = rS + (j + 1) % r; } }
+    
+    void BuildSphere(Vector3 c, CapSettings cp, Color col, Vector3 ax, Vector3 fN, Vector3 fB, ref int v, ref int t) {
+        int res = Mathf.Max(3, cp.sphereResolution); int g = res + 1; int bV = v;
+        for (int iy = 0; iy < g; iy++) {
+            float ty = (float)iy / res, th = (ty - 0.5f) * Mathf.PI, cy = Mathf.Cos(th), sy = Mathf.Sin(th);
+            for (int ix = 0; ix < g; ix++) {
+                float tx = (float)ix / res, ph = tx * Mathf.PI * 2f;
+                Vector3 nL = new Vector3(Mathf.Cos(ph) * cy, sy, Mathf.Sin(ph) * cy);
+                AddVertex(c + (fN * nL.x + ax * nL.y + fB * nL.z) * cp.sphereRadius, new Vector2(tx, ty), col, ref v);
+            }
         }
-        int bCount = s.bonesPerSegment;
-        for (int i = start; i < end; i++) {
-            float progress = uvs[i].y;
-            float t = Mathf.Clamp01((progress + s.blendOffset) * s.blendScaler);
-            float bT = t * (float)(bCount - 1);
-            int bA = Mathf.FloorToInt(bT); int bB = Mathf.Clamp(bA + 1, 0, bCount - 1);
-            float wB = bT - (float)bA;
-            weights[i].boneIndex0 = boneIdx + bA; weights[i].weight0 = 1f - wB;
-            weights[i].boneIndex1 = boneIdx + bB; weights[i].weight1 = wB;
+        for (int iy = 0; iy < res; iy++) {
+            int rA = bV + iy * g, rB = bV + (iy + 1) * g;
+            for (int ix = 0; ix < res; ix++) { tris[t++] = rA + ix; tris[t++] = rA + ix + 1; tris[t++] = rB + ix; tris[t++] = rA + ix + 1; tris[t++] = rB + ix + 1; tris[t++] = rB + ix; }
         }
     }
 
-    Transform SetupSegmentBones(int si, ref List<Transform> allBones, ref List<Matrix4x4> bindPoses, Transform lastBone)
-    {
-        int count = Mathf.Max(1, segments[si].bonesPerSegment);
-        if (segments[si].boneInstances == null) segments[si].boneInstances = new List<Transform>();
-        while (segments[si].boneInstances.Count > count) { if (segments[si].boneInstances[0]) DestroyImmediate(segments[si].boneInstances[0].gameObject); segments[si].boneInstances.RemoveAt(0); }
-        while (segments[si].boneInstances.Count < count) { GameObject go = new GameObject("Bone"); go.transform.parent = transform; segments[si].boneInstances.Add(go.transform); }
+    void BuildRoundedCap(Vector3[] vA, int rS, Vector3 c, float r, int ring, CapSettings cp, Vector3 ax, Vector3 fN, Vector3 fB, Color col, bool isStart, ref int v, ref int t) {
+        int cB = v, lat = Mathf.Max(2, cp.segments);
+        for (int i = 1; i < lat; i++) {
+            float tL = (float)i / lat, th = tL * Mathf.PI * 0.5f, rad = r * Mathf.Pow(Mathf.Cos(th), cp.bulge), h = r * Mathf.Sin(th) * cp.scale;
+            for (int j = 0; j < ring; j++) {
+                float ph = (j / (float)ring) * Mathf.PI * 2f;
+                AddVertex(c + (fN * Mathf.Cos(ph) + fB * Mathf.Sin(ph)) * rad + ax * h, new Vector2(j / (float)ring, tL), col, ref v);
+            }
+        }
+        for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; if (isStart) { tris[t++] = rS + j; tris[t++] = cB + j; tris[t++] = cB + j1; tris[t++] = rS + j; tris[t++] = cB + j1; tris[t++] = rS + j1; } else { tris[t++] = rS + j; tris[t++] = cB + j1; tris[t++] = cB + j; tris[t++] = rS + j; tris[t++] = rS + j1; tris[t++] = cB + j1; } }
+        for (int i = 0; i < lat - 2; i++) { int rA = cB + i * ring, rB = rA + ring; for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; if(isStart){ tris[t++] = rA + j; tris[t++] = rB + j; tris[t++] = rB + j1; tris[t++] = rA + j; tris[t++] = rB + j1; tris[t++] = rA + j1; } else { tris[t++] = rA + j; tris[t++] = rB + j1; tris[t++] = rB + j; tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j1; } } }
+        int pI = v; AddVertex(c + ax * (r * cp.scale), new Vector2(0.5f, 1f), col, ref v);
+        int lS = cB + (lat - 2) * ring; for (int j = 0; j < ring; j++) { tris[t++] = lS + j; if (isStart) { tris[t++] = pI; tris[t++] = lS + (j + 1) % ring; } else { tris[t++] = lS + (j + 1) % ring; tris[t++] = pI; } }
+    }
 
-        for (int b = 0; b < count; b++) {
-            float t = (float)b / (count > 1 ? (float)(count - 1) : 1.0f);
+    int GetCapVertCount(CapSettings cp, int ring) {
+        if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return ring + 1;
+        if (cp.type == TubeCapType.Rounded) return (Mathf.Max(2, cp.segments) * ring + 1 + ring);
+        if (cp.type == TubeCapType.FullSphere) { int g = Mathf.Max(3, cp.sphereResolution) + 1; return g * g; }
+        return 0;
+    }
+    int GetCapTriCount(CapSettings cp, int ring) {
+        if (cp.type == TubeCapType.Flat || cp.type == TubeCapType.Point) return ring * 3;
+        if (cp.type == TubeCapType.Rounded) return Mathf.Max(2, cp.segments) * ring * 6 + ring * 3;
+        if (cp.type == TubeCapType.FullSphere) { int res = Mathf.Max(3, cp.sphereResolution); return res * res * 6; }
+        return 0;
+    }
+
+    void ApplyBoneWeights(int start, int end, TubeSegment s, int bIdx) {
+        if (!s.useBones) { for (int i = start; i < end; i++) { weights[i].boneIndex0 = 0; weights[i].weight0 = 1f; } return; }
+        for (int i = start; i < end; i++) {
+            float t = Mathf.Clamp01((uvs[i].y + s.blendOffset) * s.blendScaler);
+            float bT = t * (s.bonesPerSegment - 1); int bA = Mathf.FloorToInt(bT), bB = Mathf.Clamp(bA + 1, 0, s.bonesPerSegment - 1); float wB = bT - bA;
+            weights[i].boneIndex0 = bIdx + bA; weights[i].weight0 = 1f - wB; weights[i].boneIndex1 = bIdx + bB; weights[i].weight1 = wB;
+        }
+    }
+
+    Transform SetupSegmentBones(int si, ref List<Transform> allBones, ref List<Matrix4x4> bindPoses, Transform lastB) {
+        int ct = Mathf.Max(1, segments[si].bonesPerSegment);
+        if (segments[si].boneInstances == null) segments[si].boneInstances = new List<Transform>();
+        while (segments[si].boneInstances.Count > ct) { if (segments[si].boneInstances[0]) DestroyImmediate(segments[si].boneInstances[0].gameObject); segments[si].boneInstances.RemoveAt(0); }
+        while (segments[si].boneInstances.Count < ct) { GameObject go = new GameObject("Bone"); go.transform.parent = transform; segments[si].boneInstances.Add(go.transform); }
+        for (int b = 0; b < ct; b++) {
+            float t = (float)b / (ct > 1 ? (float)(ct - 1) : 1.0f);
             Transform bone = segments[si].boneInstances[b];
             bone.localPosition = GetBezierPoint(segments[si], t);
             bone.localRotation = Quaternion.LookRotation(GetBezierTangent(segments[si], t));
-            bone.name = segments[si].name + "_Bone_" + b;
-            if (segments[si].useNestedChain) { bone.SetParent(lastBone == null ? transform : lastBone); lastBone = bone; }
-            else { bone.SetParent(transform); }
+            bone.name = segments[si].name + "_B" + b;
+            if (segments[si].useNestedChain) { bone.SetParent(lastB == null ? transform : lastB); lastB = bone; } else { bone.SetParent(transform); }
             allBones.Add(bone); bindPoses.Add(bone.worldToLocalMatrix * transform.localToWorldMatrix);
         }
-        return lastBone;
+        return lastB;
     }
 
-    Vector3 GetBezierPoint(TubeSegment s, float t) { Vector3 m0 = Vector3.Lerp(s.p0, s.p1, t); Vector3 m1 = Vector3.Lerp(s.p1, s.p2, t); return Vector3.Lerp(m0, m1, t); }
+    Vector3 GetBezierPoint(TubeSegment s, float t) { Vector3 m0 = Vector3.Lerp(s.p0, s.p1, t), m1 = Vector3.Lerp(s.p1, s.p2, t); return Vector3.Lerp(m0, m1, t); }
     Vector3 GetBezierTangent(TubeSegment s, float t) { return (2f * (1f - t) * (s.p1 - s.p0) + 2f * t * (s.p2 - s.p1)).normalized; }
 
     void SyncRenderer(bool skin) {
@@ -478,34 +393,5 @@ public class TubeBuilderRenderer : MonoBehaviour
         if (mesh == null) { mesh = new Mesh(); mesh.name = "TubeBatch"; mesh.MarkDynamic(); }
         if (GetComponent<SkinnedMeshRenderer>()) GetComponent<SkinnedMeshRenderer>().sharedMesh = mesh;
         else if (GetComponent<MeshFilter>()) GetComponent<MeshFilter>().sharedMesh = mesh;
-    }
-
-    // Geometry Core Functions
-    void BuildFlat(Vector3 c, Color col, ref int v, out int ci) { ci = v; verts[v] = c; uvs[v] = new Vector2(0.5f, 0.5f); colors[v] = col; v++; }
-    void BuildPoint(Vector3 c, Vector3 dir, TubeSegment s, float tC, Color col, ref int v, out int ti) { float r = s.radiusProfile != null ? s.radiusProfile.Evaluate(tC) : 0.03f; ti = v; verts[v] = c + dir.normalized * (r * s.capScale); uvs[v] = new Vector2(0.5f, 1f); colors[v] = col; v++; }
-    void BuildFan(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = rS + (j + 1) % r; tris[t++] = ci; } }
-    void BuildFanRev(int ci, int rS, int r, ref int t) { for (int j = 0; j < r; j++) { tris[t++] = rS + j; tris[t++] = ci; tris[t++] = rS + (j + 1) % r; } }
-    void BuildSphere(Vector3 c, float r, int ring, Color col, Vector3 axis, Vector3 fN, Vector3 fB, float twist, ref int v, ref int t) {
-        int g = ring + 1; int baseV = v; Quaternion twQ = Quaternion.AngleAxis(twist, axis); Vector3 nW = twQ * fN; Vector3 bW = twQ * fB;
-        for (int iy = 0; iy < g; iy++) { float ty = (float)iy / ring; float theta = (ty - 0.5f) * Mathf.PI; float cy = Mathf.Cos(theta); float sy = Mathf.Sin(theta);
-            for (int ix = 0; ix < g; ix++) { float tx = (float)ix / ring; float phi = tx * Mathf.PI * 2f; Vector3 nL = new Vector3(Mathf.Cos(phi) * cy, sy, Mathf.Sin(phi) * cy);
-                verts[v] = c + (nW * nL.x + axis * nL.y + bW * nL.z) * r; uvs[v] = new Vector2(tx, ty); colors[v] = col; v++; } }
-        for (int iy = 0; iy < ring; iy++) { int rA = baseV + iy * g; int rB = baseV + (iy + 1) * g;
-            for (int ix = 0; ix < ring; ix++) { tris[t++] = rA + ix; tris[t++] = rA + ix + 1; tris[t++] = rB + ix; tris[t++] = rA + ix + 1; tris[t++] = rB + ix + 1; tris[t++] = rB + ix; } }
-    }
-    void BuildRoundedCapStart_UsingTubeRing(Vector3[] vA, int rS, Vector3 c, float r, int ring, int lat, Vector3 ax, Vector3 fN, Vector3 fB, Color col, float sc, float bP, ref int v, ref int t) {
-        int cB = v; for (int i = 1; i < lat; i++) { float tL = (float)i / lat; float th = tL * Mathf.PI * 0.5f; float rad = r * Mathf.Pow(Mathf.Cos(th), bP); float h = r * Mathf.Sin(th) * sc;
-            for (int j = 0; j < ring; j++) { float phi = (j / (float)ring) * Mathf.PI * 2f; vA[v] = c + (fN * Mathf.Cos(phi) + fB * Mathf.Sin(phi)) * rad + ax * h; uvs[v] = new Vector2(j / (float)ring, tL); colors[v] = col; v++; } }
-        for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; tris[t++] = rS + j; tris[t++] = cB + j; tris[t++] = cB + j1; tris[t++] = rS + j; tris[t++] = cB + j1; tris[t++] = rS + j1; }
-        for (int i = 0; i < lat - 2; i++) { int rA = cB + i * ring; int rB = rA + ring; for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; tris[t++] = rA + j; tris[t++] = rB + j; tris[t++] = rB + j1; tris[t++] = rA + j; tris[t++] = rB + j1; tris[t++] = rA + j1; } }
-        int pI = v; vA[v] = c + ax * (r * sc); uvs[v] = new Vector2(0.5f, 1f); colors[v] = col; v++; int lS = cB + (lat - 2) * ring; for (int j = 0; j < ring; j++) { tris[t++] = lS + j; tris[t++] = pI; tris[t++] = lS + (j + 1) % ring; }
-    }
-    void BuildRoundedCapEnd_UsingTubeRing(Vector3[] vA, int rS, Vector3 c, float r, int ring, int lat, Vector3 ax, Vector3 fN, Vector3 fB, float tw, Color col, float sc, float bP, ref int v, ref int t) {
-        Quaternion q = Quaternion.AngleAxis(tw, ax); Vector3 U = q * fN; Vector3 V = q * fB; int cB = v;
-        for (int i = 1; i < lat; i++) { float tL = (float)i / lat; float th = tL * Mathf.PI * 0.5f; float rad = r * Mathf.Pow(Mathf.Cos(th), bP); float h = r * Mathf.Sin(th) * sc;
-            for (int j = 0; j < ring; j++) { float phi = (j / (float)ring) * Mathf.PI * 2f; vA[v] = c + (U * Mathf.Cos(phi) + V * Mathf.Sin(phi)) * rad + ax * h; uvs[v] = new Vector2(j / (float)ring, tL); colors[v] = col; v++; } }
-        for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; tris[t++] = rS + j; tris[t++] = cB + j1; tris[t++] = cB + j; tris[t++] = rS + j; tris[t++] = rS + j1; tris[t++] = cB + j1; }
-        for (int i = 0; i < lat - 2; i++) { int rA = cB + i * ring; int rB = rA + ring; for (int j = 0; j < ring; j++) { int j1 = (j + 1) % ring; tris[t++] = rA + j; tris[t++] = rB + j1; tris[t++] = rB + j; tris[t++] = rA + j; tris[t++] = rA + j1; tris[t++] = rB + j1; } }
-        int pI = v; vA[v] = c + ax * (r * sc); uvs[v] = new Vector2(0.5f, 1f); colors[v] = col; v++; int lS = cB + (lat - 2) * ring; for (int j = 0; j < ring; j++) { tris[t++] = lS + j; tris[t++] = lS + (j + 1) % ring; tris[t++] = pI; }
     }
 }
