@@ -5,20 +5,18 @@ using UnityEditorInternal;
 [CustomEditor(typeof(TubeBuilderRenderer))]
 public class TubeBuilderRendererEditor : Editor
 {
-    SerializedProperty segmentsProp, gizmoCurveColor, gizmoBoneColor, showWeightsDebugProp, showBonesGizmoProp, autoRebuildProp;
+    SerializedProperty segmentsProp, gizmoCurveColor, showWeightsDebugProp, showBonesGizmoProp, autoRebuildProp;
     ReorderableList list;
     int selectedIndex = -1;
 
     void OnEnable() {
-        segmentsProp = serializedObject.FindProperty("segments"); 
+        segmentsProp = serializedObject.FindProperty("segments");
         gizmoCurveColor = serializedObject.FindProperty("gizmoCurveColor");
-        gizmoBoneColor = serializedObject.FindProperty("gizmoBoneColor");
-        showWeightsDebugProp = serializedObject.FindProperty("showWeightsDebug"); 
+        showWeightsDebugProp = serializedObject.FindProperty("showWeightsDebug");
         showBonesGizmoProp = serializedObject.FindProperty("showBonesGizmo");
         autoRebuildProp = serializedObject.FindProperty("autoRebuild");
-        
         list = new ReorderableList(serializedObject, segmentsProp, true, true, true, true);
-        list.drawHeaderCallback = delegate(Rect r) { EditorGUI.LabelField(r, "Tube Segments"); };
+        list.drawHeaderCallback = delegate(Rect r) { EditorGUI.LabelField(r, "Segments"); };
         list.onSelectCallback = delegate(ReorderableList l) { selectedIndex = l.index; Tools.hidden = true; };
         list.onAddCallback = delegate(ReorderableList l) {
             int idx = l.serializedProperty.arraySize++; SerializedProperty s = l.serializedProperty.GetArrayElementAtIndex(idx);
@@ -32,16 +30,14 @@ public class TubeBuilderRendererEditor : Editor
     }
 
     public override void OnInspectorGUI() {
-        serializedObject.Update(); TubeBuilderRenderer r = (TubeBuilderRenderer)target;
+        serializedObject.Update();
+        TubeBuilderRenderer r = (TubeBuilderRenderer)target;
         EditorGUILayout.LabelField("Global Settings", EditorStyles.boldLabel);
         EditorGUILayout.PropertyField(gizmoCurveColor);
-        EditorGUILayout.PropertyField(gizmoBoneColor);
-        EditorGUILayout.PropertyField(autoRebuildProp); 
+        EditorGUILayout.PropertyField(autoRebuildProp);
         EditorGUILayout.PropertyField(showWeightsDebugProp);
         EditorGUILayout.PropertyField(showBonesGizmoProp);
-        
         if (GUILayout.Button("Force Rebuild")) { r.MarkDirty(); r.Rebuild(); }
-        EditorGUILayout.Space();
         list.DoLayoutList();
         if (selectedIndex >= 0 && selectedIndex < segmentsProp.arraySize) DrawSettings(segmentsProp.GetArrayElementAtIndex(selectedIndex));
         if (GUI.changed) { r.MarkDirty(); }
@@ -50,45 +46,70 @@ public class TubeBuilderRendererEditor : Editor
 
     void DrawSettings(SerializedProperty s) {
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("name")); EditorGUILayout.PropertyField(s.FindPropertyRelative("enabled"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("name"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("enabled"));
         EditorGUILayout.PropertyField(s.FindPropertyRelative("connectToPrevious"));
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("generateTube")); EditorGUILayout.PropertyField(s.FindPropertyRelative("useHardEdges"));
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("p0")); EditorGUILayout.PropertyField(s.FindPropertyRelative("p1")); EditorGUILayout.PropertyField(s.FindPropertyRelative("p2"));
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("segments")); EditorGUILayout.PropertyField(s.FindPropertyRelative("radialSegments"));
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("radiusProfile")); EditorGUILayout.PropertyField(s.FindPropertyRelative("radialShapeCurve"));
-        DrawCap(s.FindPropertyRelative("startCap"), "Start Cap"); DrawCap(s.FindPropertyRelative("endCap"), "End Cap");
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("generateTube"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("useHardEdges"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvMapping"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("p0"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("p1"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("p2"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("segments"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("radialSegments"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("radiusProfile"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("radialShapeCurve"));
+        DrawCap(s.FindPropertyRelative("startCap"), "Start Cap");
+        DrawCap(s.FindPropertyRelative("endCap"), "End Cap");
         EditorGUILayout.PropertyField(s.FindPropertyRelative("useBones"));
         if (s.FindPropertyRelative("useBones").boolValue) {
-            EditorGUI.indentLevel++; EditorGUILayout.PropertyField(s.FindPropertyRelative("bonesPerSegment"));
+            EditorGUI.indentLevel++;
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("bonesPerSegment"));
             EditorGUILayout.PropertyField(s.FindPropertyRelative("useNestedChain"));
-            EditorGUILayout.PropertyField(s.FindPropertyRelative("blendOffset")); EditorGUILayout.PropertyField(s.FindPropertyRelative("blendScaler"));
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("blendOffset"));
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("blendScaler"));
             EditorGUI.indentLevel--;
         }
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("startColor")); EditorGUILayout.PropertyField(s.FindPropertyRelative("endColor"));
-        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvTiling")); EditorGUILayout.PropertyField(s.FindPropertyRelative("uvOffset"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("startColor"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("endColor"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvTiling"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvOffset"));
         EditorGUILayout.EndVertical();
     }
 
     void DrawCap(SerializedProperty c, string l) {
-        EditorGUILayout.LabelField(l, EditorStyles.boldLabel); EditorGUI.indentLevel++;
-        SerializedProperty tP = c.FindPropertyRelative("type"); EditorGUILayout.PropertyField(tP);
+        EditorGUILayout.LabelField(l, EditorStyles.boldLabel);
+        EditorGUI.indentLevel++;
+        SerializedProperty tP = c.FindPropertyRelative("type");
+        EditorGUILayout.PropertyField(tP);
         if (tP.enumValueIndex != 0) {
             EditorGUILayout.PropertyField(c.FindPropertyRelative("scale"));
-            if (tP.enumValueIndex == 3) { EditorGUILayout.PropertyField(c.FindPropertyRelative("bulge")); EditorGUILayout.PropertyField(c.FindPropertyRelative("segments")); }
-            if (tP.enumValueIndex == 4) { EditorGUILayout.PropertyField(c.FindPropertyRelative("sphereRadius")); EditorGUILayout.PropertyField(c.FindPropertyRelative("sphereResolution")); }
+            if (tP.enumValueIndex == 3) {
+                EditorGUILayout.PropertyField(c.FindPropertyRelative("bulge"));
+                EditorGUILayout.PropertyField(c.FindPropertyRelative("segments"));
+            }
+            if (tP.enumValueIndex == 4) {
+                EditorGUILayout.PropertyField(c.FindPropertyRelative("sphereRadius"));
+                EditorGUILayout.PropertyField(c.FindPropertyRelative("sphereResolution"));
+            }
         }
         EditorGUI.indentLevel--;
     }
 
     void OnSceneGUI() {
-        TubeBuilderRenderer r = (TubeBuilderRenderer)target; if (selectedIndex < 0 || selectedIndex >= r.segments.Length) return;
-        Undo.RecordObject(r, "Move Points"); EditorGUI.BeginChangeCheck();
+        TubeBuilderRenderer r = (TubeBuilderRenderer)target;
+        if (selectedIndex < 0 || selectedIndex >= r.segments.Length) return;
+        Undo.RecordObject(r, "Move Points");
+        EditorGUI.BeginChangeCheck();
         Vector3 p0 = r.transform.TransformPoint(r.segments[selectedIndex].p0), p1 = r.transform.TransformPoint(r.segments[selectedIndex].p1), p2 = r.transform.TransformPoint(r.segments[selectedIndex].p2);
-        p0 = Handles.PositionHandle(p0, Quaternion.identity); p1 = Handles.PositionHandle(p1, Quaternion.identity); p2 = Handles.PositionHandle(p2, Quaternion.identity);
+        p0 = Handles.PositionHandle(p0, Quaternion.identity);
+        p1 = Handles.PositionHandle(p1, Quaternion.identity);
+        p2 = Handles.PositionHandle(p2, Quaternion.identity);
         if (EditorGUI.EndChangeCheck()) {
-            r.segments[selectedIndex].p0 = r.transform.InverseTransformPoint(p0); r.segments[selectedIndex].p1 = r.transform.InverseTransformPoint(p1); r.segments[selectedIndex].p2 = r.transform.InverseTransformPoint(p2);
+            r.segments[selectedIndex].p0 = r.transform.InverseTransformPoint(p0);
+            r.segments[selectedIndex].p1 = r.transform.InverseTransformPoint(p1);
+            r.segments[selectedIndex].p2 = r.transform.InverseTransformPoint(p2);
             r.MarkDirty();
         }
     }
 }
-
