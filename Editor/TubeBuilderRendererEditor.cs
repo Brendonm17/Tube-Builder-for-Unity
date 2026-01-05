@@ -1,12 +1,14 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEditor;
 using UnityEditorInternal;
+using System.Collections.Generic;
 
 [CustomEditor(typeof(TubeBuilderRenderer))]
 public class TubeBuilderRendererEditor : Editor
 {
     SerializedProperty segmentsProp;
     SerializedProperty gizmoCurveColor;
+    SerializedProperty showWeightsDebugProp; // Added for weight heatmap
     ReorderableList segmentsList;
     int selectedIndex = -1;
     static bool s_ShowDebug = false;
@@ -16,6 +18,7 @@ public class TubeBuilderRendererEditor : Editor
     {
         segmentsProp = serializedObject.FindProperty("segments");
         gizmoCurveColor = serializedObject.FindProperty("gizmoCurveColor");
+        showWeightsDebugProp = serializedObject.FindProperty("showWeightsDebug");
         s_AutoRebuild = EditorPrefs.GetBool("TubeBuilderRenderer_AutoRebuild", true);
         SetupList();
     }
@@ -31,12 +34,12 @@ public class TubeBuilderRendererEditor : Editor
 
         segmentsList = new ReorderableList(serializedObject, segmentsProp, true, true, true, true);
 
-        segmentsList.drawHeaderCallback = (Rect rect) =>
+        segmentsList.drawHeaderCallback = delegate(Rect rect)
         {
             EditorGUI.LabelField(rect, "tube segments");
         };
 
-        segmentsList.onAddCallback = (ReorderableList list) =>
+        segmentsList.onAddCallback = delegate(ReorderableList list)
         {
             int index = list.serializedProperty.arraySize;
             list.serializedProperty.arraySize++;
@@ -47,7 +50,7 @@ public class TubeBuilderRendererEditor : Editor
             Tools.hidden = true;
         };
 
-        segmentsList.onRemoveCallback = (ReorderableList list) =>
+        segmentsList.onRemoveCallback = delegate(ReorderableList list)
         {
             if (EditorUtility.DisplayDialog("delete tube segment", "remove selected segment?", "yes", "no"))
             {
@@ -68,13 +71,13 @@ public class TubeBuilderRendererEditor : Editor
             }
         };
 
-        segmentsList.onSelectCallback = (ReorderableList list) =>
+        segmentsList.onSelectCallback = delegate(ReorderableList list)
         {
             selectedIndex = list.index;
             Tools.hidden = true;
         };
 
-        segmentsList.drawElementCallback = (Rect rect, int index, bool isActive, bool isFocused) =>
+        segmentsList.drawElementCallback = delegate(Rect rect, int index, bool isActive, bool isFocused)
         {
             SerializedProperty segProp = segmentsProp.GetArrayElementAtIndex(index);
             if (segProp == null) return;
@@ -92,7 +95,7 @@ public class TubeBuilderRendererEditor : Editor
             EditorGUI.LabelField(labelRect, nameProp.stringValue);
         };
 
-        segmentsList.elementHeightCallback = (int index) =>
+        segmentsList.elementHeightCallback = delegate(int index)
         {
             return EditorGUIUtility.singleLineHeight + 6f;
         };
@@ -128,8 +131,14 @@ public class TubeBuilderRendererEditor : Editor
 
         segProp.FindPropertyRelative("generateTube").boolValue = true;
         segProp.FindPropertyRelative("colorCutoffSegment").intValue = -1;
-		segProp.FindPropertyRelative("capScale").floatValue = 1f;
+        segProp.FindPropertyRelative("capScale").floatValue = 1f;
 
+        // Bone Defaults
+        segProp.FindPropertyRelative("useBones").boolValue = false;
+        segProp.FindPropertyRelative("bonesPerSegment").intValue = 2;
+        segProp.FindPropertyRelative("useNestedChain").boolValue = true;
+        segProp.FindPropertyRelative("blendOffset").floatValue = 0f;
+        segProp.FindPropertyRelative("blendScaler").floatValue = 1f;
     }
 
     public override void OnInspectorGUI()
@@ -144,6 +153,9 @@ public class TubeBuilderRendererEditor : Editor
         EditorGUILayout.LabelField("mesh tools", EditorStyles.boldLabel);
         s_AutoRebuild = EditorGUILayout.Toggle("auto rebuild", s_AutoRebuild);
         EditorPrefs.SetBool("TubeBuilderRenderer_AutoRebuild", s_AutoRebuild);
+
+        // Heatmap toggle
+        EditorGUILayout.PropertyField(showWeightsDebugProp, new GUIContent("show bone weights"));
 
         if (GUILayout.Button("force rebuild"))
         {
@@ -162,7 +174,6 @@ public class TubeBuilderRendererEditor : Editor
         if (segmentsList == null) SetupList();
         segmentsList.DoLayoutList();
 
-        // duplicate button
         if (selectedIndex >= 0 && selectedIndex < segmentsProp.arraySize)
         {
             if (GUILayout.Button("duplicate segment"))
@@ -172,7 +183,6 @@ public class TubeBuilderRendererEditor : Editor
             }
         }
 
-        // deselect button
         if (GUILayout.Button("deselect segment"))
         {
             selectedIndex = -1;
@@ -195,17 +205,12 @@ public class TubeBuilderRendererEditor : Editor
     void DuplicateSegment(int index)
     {
         serializedObject.Update();
-
         segmentsProp.InsertArrayElementAtIndex(index);
         SerializedProperty newSeg = segmentsProp.GetArrayElementAtIndex(index + 1);
         SerializedProperty oldSeg = segmentsProp.GetArrayElementAtIndex(index);
-
-        newSeg.FindPropertyRelative("name").stringValue =
-            oldSeg.FindPropertyRelative("name").stringValue + " copy";
-
+        newSeg.FindPropertyRelative("name").stringValue = oldSeg.FindPropertyRelative("name").stringValue + " copy";
         selectedIndex = index + 1;
         Tools.hidden = true;
-
         serializedObject.ApplyModifiedProperties();
     }
 
@@ -225,6 +230,30 @@ public class TubeBuilderRendererEditor : Editor
         SerializedProperty enabledProp = segProp.FindPropertyRelative("enabled");
         enabledProp.boolValue = EditorGUILayout.Toggle("enabled", enabledProp.boolValue);
 
+        // BONE SETTINGS SECTION
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("bone settings", EditorStyles.miniBoldLabel);
+        SerializedProperty useBonesProp = segProp.FindPropertyRelative("useBones");
+        useBonesProp.boolValue = EditorGUILayout.Toggle("use bones", useBonesProp.boolValue);
+
+        if (useBonesProp.boolValue)
+        {
+            EditorGUI.indentLevel++;
+            SerializedProperty bPerSegProp = segProp.FindPropertyRelative("bonesPerSegment");
+            bPerSegProp.intValue = EditorGUILayout.IntSlider("bones per segment", bPerSegProp.intValue, 1, 10);
+
+            SerializedProperty nestedProp = segProp.FindPropertyRelative("useNestedChain");
+            nestedProp.boolValue = EditorGUILayout.Toggle("ik nested chain", nestedProp.boolValue);
+
+            SerializedProperty bOffsetProp = segProp.FindPropertyRelative("blendOffset");
+            bOffsetProp.floatValue = EditorGUILayout.Slider("blend offset", bOffsetProp.floatValue, -0.5f, 0.5f);
+
+            SerializedProperty bScaleProp = segProp.FindPropertyRelative("blendScaler");
+            bScaleProp.floatValue = EditorGUILayout.Slider("blend sharpness", bScaleProp.floatValue, 0.1f, 3.0f);
+            EditorGUI.indentLevel--;
+        }
+        EditorGUILayout.Space();
+
         SerializedProperty genTubeProp = segProp.FindPropertyRelative("generateTube");
         genTubeProp.boolValue = EditorGUILayout.Toggle("generate tube", genTubeProp.boolValue);
 
@@ -234,10 +263,8 @@ public class TubeBuilderRendererEditor : Editor
 
         EditorGUILayout.LabelField("start point (p0)");
         p0.vector3Value = EditorGUILayout.Vector3Field(GUIContent.none, p0.vector3Value);
-
         EditorGUILayout.LabelField("control point (p1)");
         p1.vector3Value = EditorGUILayout.Vector3Field(GUIContent.none, p1.vector3Value);
-
         EditorGUILayout.LabelField("end point (p2)");
         p2.vector3Value = EditorGUILayout.Vector3Field(GUIContent.none, p2.vector3Value);
 
@@ -252,11 +279,6 @@ public class TubeBuilderRendererEditor : Editor
         SerializedProperty curveProp = segProp.FindPropertyRelative("radiusProfile");
         curveProp.animationCurveValue = EditorGUILayout.CurveField("radius profile", curveProp.animationCurveValue);
 
-        if (GUILayout.Button("open radius editor..."))
-        {
-            TubeCurveEditorWindow.Open(curveProp);
-        }
-
         SerializedProperty capStartProp = segProp.FindPropertyRelative("capStart");
         SerializedProperty capEndProp = segProp.FindPropertyRelative("capEnd");
 
@@ -269,9 +291,8 @@ public class TubeBuilderRendererEditor : Editor
         latProp.intValue = Mathf.Max(0, EditorGUILayout.IntField("rounded cap segments", latProp.intValue));
         sphereRadiusProp.floatValue = Mathf.Max(0f, EditorGUILayout.FloatField("sphere radius", sphereRadiusProp.floatValue));
 
-		SerializedProperty capScaleProp = segProp.FindPropertyRelative("capScale");
-		capScaleProp.floatValue = EditorGUILayout.FloatField("cap scale", capScaleProp.floatValue);
-
+        SerializedProperty capScaleProp = segProp.FindPropertyRelative("capScale");
+        capScaleProp.floatValue = EditorGUILayout.FloatField("cap scale", capScaleProp.floatValue);
 
         EditorGUILayout.PropertyField(segProp.FindPropertyRelative("bulgePower"), new GUIContent("bulge power"));
 
@@ -288,19 +309,14 @@ public class TubeBuilderRendererEditor : Editor
         scaleProp.floatValue = EditorGUILayout.FloatField("color lerp scale", scaleProp.floatValue);
 
         SerializedProperty cutoffProp = segProp.FindPropertyRelative("colorCutoffSegment");
-        int segCountVal = segProp.FindPropertyRelative("segments").intValue;
-
         cutoffProp.intValue = EditorGUILayout.IntField("color cutoff segment", cutoffProp.intValue);
-
-        if (cutoffProp.intValue < -1) cutoffProp.intValue = -1;
-        if (cutoffProp.intValue > segCountVal) cutoffProp.intValue = segCountVal;
 
         EditorGUILayout.EndVertical();
     }
 
     void DrawDebugSection(TubeBuilderRenderer r)
     {
-        s_ShowDebug = EditorGUILayout.ToggleLeft("show debug", s_ShowDebug, EditorStyles.boldLabel);
+        s_ShowDebug = EditorGUILayout.ToggleLeft("show debug info", s_ShowDebug, EditorStyles.boldLabel);
         if (!s_ShowDebug) return;
 
         EditorGUILayout.BeginVertical(EditorStyles.helpBox);
@@ -308,8 +324,21 @@ public class TubeBuilderRendererEditor : Editor
         int count = segmentsProp != null ? segmentsProp.arraySize : 0;
         EditorGUILayout.LabelField("tube count: " + count);
 
-        MeshFilter mf = r.GetComponent<MeshFilter>();
-        Mesh mesh = mf != null ? mf.sharedMesh : null;
+        // Check for SMR or MR
+        Mesh mesh = null;
+        SkinnedMeshRenderer smr = r.GetComponent<SkinnedMeshRenderer>();
+        if (smr != null)
+        {
+            mesh = smr.sharedMesh;
+            EditorGUILayout.LabelField("renderer: SkinnedMeshRenderer");
+            EditorGUILayout.LabelField("active bones: " + (smr.bones != null ? smr.bones.Length : 0));
+        }
+        else
+        {
+            MeshFilter mf = r.GetComponent<MeshFilter>();
+            if (mf != null) mesh = mf.sharedMesh;
+            EditorGUILayout.LabelField("renderer: MeshRenderer");
+        }
 
         if (mesh != null)
         {
@@ -318,55 +347,38 @@ public class TubeBuilderRendererEditor : Editor
         }
         else EditorGUILayout.LabelField("mesh: (none)");
 
-        if (selectedIndex >= 0 && selectedIndex < count)
-        {
-            SerializedProperty segProp = segmentsProp.GetArrayElementAtIndex(selectedIndex);
-            SerializedProperty segCount = segProp.FindPropertyRelative("segments");
-            SerializedProperty radCount = segProp.FindPropertyRelative("radialSegments");
-            SerializedProperty latProp = segProp.FindPropertyRelative("roundedCapSegments");
-
-            EditorGUILayout.LabelField("curve segments: " + Mathf.Max(2, segCount.intValue));
-            EditorGUILayout.LabelField("radial segments: " + Mathf.Max(3, radCount.intValue));
-            EditorGUILayout.LabelField("rounded cap segments: " + Mathf.Max(0, latProp.intValue));
-        }
-
         EditorGUILayout.EndVertical();
     }
 
     void BuildMeshAsset(TubeBuilderRenderer r)
     {
         r.Rebuild();
-        MeshFilter mf = r.GetComponent<MeshFilter>();
-        if (mf == null)
+        Mesh meshToSave = null;
+        
+        SkinnedMeshRenderer smr = r.GetComponent<SkinnedMeshRenderer>();
+        if (smr != null) meshToSave = smr.sharedMesh;
+        else
         {
-            EditorUtility.DisplayDialog("no meshfilter", "no meshfilter found on this object.", "ok");
+            MeshFilter mf = r.GetComponent<MeshFilter>();
+            if (mf != null) meshToSave = mf.sharedMesh;
+        }
+
+        if (meshToSave == null)
+        {
+            EditorUtility.DisplayDialog("no mesh", "no mesh available to save.", "ok");
             return;
         }
 
-        Mesh src = mf.sharedMesh;
-        if (src == null)
-        {
-            r.Rebuild();
-            src = mf.sharedMesh;
-        }
-
-        if (src == null)
-        {
-            EditorUtility.DisplayDialog("no mesh", "no mesh available to save. try force rebuild first.", "ok");
-            return;
-        }
-
-        string path = EditorUtility.SaveFilePanelInProject("save mesh asset", "TubeMesh", "asset", "choose a location to save the generated mesh.");
+        string path = EditorUtility.SaveFilePanelInProject("save mesh asset", "TubeMesh", "asset", "save the generated mesh.");
         if (string.IsNullOrEmpty(path)) return;
 
-        Mesh newMesh = Object.Instantiate(src);
+        Mesh newMesh = Object.Instantiate(meshToSave);
         newMesh.name = "TubeMesh";
 
         AssetDatabase.CreateAsset(newMesh, path);
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
 
-        mf.sharedMesh = newMesh;
         EditorUtility.DisplayDialog("mesh saved", "mesh asset created successfully.", "ok");
     }
 
