@@ -1,420 +1,323 @@
-﻿using UnityEngine;
+using UnityEngine;
 using UnityEditor;
 using UnityEditorInternal;
 
 [CustomEditor(typeof(TubeBuilderRenderer))]
 public class TubeBuilderRendererEditor : Editor
 {
-    SerializedProperty segmentsProp;
-    SerializedProperty gizmoCurveColor;
-    ReorderableList segmentsList;
-    int selectedIndex = -1;
-    static bool s_ShowDebug = false;
-    static bool s_AutoRebuild = true;
+    private SerializedProperty segmentsProp, tubeMaterialProp, gizmoCurveColorProp, showWeightsDebugProp, autoRebuildProp;
+    private ReorderableList list;
+    private int selectedIndex = -1;
 
-    void OnEnable()
-    {
+    void OnEnable() {
         segmentsProp = serializedObject.FindProperty("segments");
-        gizmoCurveColor = serializedObject.FindProperty("gizmoCurveColor");
-        s_AutoRebuild = EditorPrefs.GetBool("TubeBuilderRenderer_AutoRebuild", true);
-        SetupList();
+        tubeMaterialProp = serializedObject.FindProperty("tubeMaterial");
+        gizmoCurveColorProp = serializedObject.FindProperty("gizmoCurveColor");
+        showWeightsDebugProp = serializedObject.FindProperty("showWeightsDebug");
+        autoRebuildProp = serializedObject.FindProperty("autoRebuild");
+
+        // LIVE UPDATE FIX: Rebuild mesh when the user hits Undo/Redo (catches Curve Window edits)
+        Undo.undoRedoPerformed += ForceRebuild;
+
+        list = new ReorderableList(serializedObject, segmentsProp, true, true, true, true);
+        list.drawHeaderCallback = delegate(Rect rect) { EditorGUI.LabelField(rect, "Tube Segments"); };
+        list.onSelectCallback = delegate(ReorderableList l) { selectedIndex = l.index; Tools.hidden = (selectedIndex >= 0); };
+        
+        list.onAddCallback = delegate(ReorderableList l) {
+            int index = l.serializedProperty.arraySize++;
+            SerializedProperty s = l.serializedProperty.GetArrayElementAtIndex(index);
+            InitSegmentDefaults(s, index);
+            serializedObject.ApplyModifiedProperties();
+            ForceRebuild();
+        };
+
+        list.drawElementCallback = delegate(Rect rect, int index, bool isActive, bool isFocused) {
+            if (index >= segmentsProp.arraySize) return;
+            SerializedProperty nameProp = segmentsProp.GetArrayElementAtIndex(index).FindPropertyRelative("name");
+            EditorGUI.LabelField(new Rect(rect.x, rect.y + 2, rect.width, 16), "Segment " + index + ": " + nameProp.stringValue, EditorStyles.boldLabel);
+        };
     }
 
-    void OnDisable()
-    {
+    void OnDisable() {
+        Undo.undoRedoPerformed -= ForceRebuild;
         Tools.hidden = false;
     }
-
-    void SetupList()
-    {
-        if (segmentsProp == null) return;
-
-        segmentsList = new ReorderableList(serializedObject, segmentsProp, true, true, true, true);
-
-        segmentsList.drawHeaderCallback = (Rect rect) =>
-        {
-            EditorGUI.LabelField(rect, "tube segments");
-        };
-
-        segmentsList.onAddCallback = (ReorderableList list) =>
-        {
-            int index = list.serializedProperty.arraySize;
-            list.serializedProperty.arraySize++;
-            SerializedProperty newElement = list.serializedProperty.GetArrayElementAtIndex(index);
-            InitSegmentDefaults(newElement, index);
-            serializedObject.ApplyModifiedProperties();
-            selectedIndex = index;
-            Tools.hidden = true;
-        };
-
-        segmentsList.onRemoveCallback = (ReorderableList list) =>
-        {
-            if (EditorUtility.DisplayDialog("delete tube segment", "remove selected segment?", "yes", "no"))
-            {
-                int idx = list.index;
-                ReorderableList.defaultBehaviours.DoRemoveButton(list);
-                serializedObject.ApplyModifiedProperties();
-
-                if (segmentsProp.arraySize == 0)
-                {
-                    selectedIndex = -1;
-                    Tools.hidden = false;
-                }
-                else
-                {
-                    selectedIndex = Mathf.Clamp(idx - 1, 0, segmentsProp.arraySize - 1);
-                    Tools.hidden = selectedIndex >= 0;
-                }
-            }
-        };
-
-        segmentsList.onSelectCallback = (ReorderableList list) =>
-        {
-            selectedIndex = list.index;
-            Tools.hidden = true;
-        };
-
-        segmentsList.drawElementCallback = (Rect rect, int index, bool isActive, bool isFocused) =>
-        {
-            SerializedProperty segProp = segmentsProp.GetArrayElementAtIndex(index);
-            if (segProp == null) return;
-
-            rect.y += 2f;
-            float line = EditorGUIUtility.singleLineHeight;
-
-            SerializedProperty colorProp = segProp.FindPropertyRelative("startColor");
-            SerializedProperty nameProp = segProp.FindPropertyRelative("name");
-
-            Rect colorRect = new Rect(rect.x, rect.y + 2f, 30f, line - 4f);
-            EditorGUI.DrawRect(colorRect, colorProp.colorValue);
-
-            Rect labelRect = new Rect(colorRect.xMax + 4f, rect.y, rect.width - colorRect.width - 4f, line);
-            EditorGUI.LabelField(labelRect, nameProp.stringValue);
-        };
-
-        segmentsList.elementHeightCallback = (int index) =>
-        {
-            return EditorGUIUtility.singleLineHeight + 6f;
-        };
+    void OnInspectorUpdate() {
+        Repaint();
     }
 
-    void InitSegmentDefaults(SerializedProperty segProp, int index)
-    {
-        segProp.FindPropertyRelative("name").stringValue = "tube " + index;
-        segProp.FindPropertyRelative("enabled").boolValue = true;
-
-        segProp.FindPropertyRelative("p0").vector3Value = Vector3.zero;
-        segProp.FindPropertyRelative("p1").vector3Value = Vector3.up * 0.5f;
-        segProp.FindPropertyRelative("p2").vector3Value = Vector3.up;
-
-        segProp.FindPropertyRelative("startColor").colorValue = Color.white;
-        segProp.FindPropertyRelative("endColor").colorValue = Color.white;
-        segProp.FindPropertyRelative("colorLerpOffset").floatValue = 0f;
-        segProp.FindPropertyRelative("colorLerpScale").floatValue = 1f;
-
-        segProp.FindPropertyRelative("segments").intValue = 6;
-        segProp.FindPropertyRelative("radialSegments").intValue = 6;
-
-        segProp.FindPropertyRelative("radiusProfile").animationCurveValue =
-            AnimationCurve.Linear(0f, 0.03f, 1f, 0.01f);
-
-        segProp.FindPropertyRelative("capStart").enumValueIndex = (int)TubeBuilderRenderer.TubeCapType.Rounded;
-        segProp.FindPropertyRelative("capEnd").enumValueIndex = (int)TubeBuilderRenderer.TubeCapType.Rounded;
-
-        segProp.FindPropertyRelative("bulgePower").floatValue = 1f;
-        segProp.FindPropertyRelative("sphereRadius").floatValue = 0.03f;
-        segProp.FindPropertyRelative("roundedCapSegments").intValue = 4;
-        segProp.FindPropertyRelative("twist").floatValue = 0f;
-
-        segProp.FindPropertyRelative("generateTube").boolValue = true;
-        segProp.FindPropertyRelative("colorCutoffSegment").intValue = -1;
-		segProp.FindPropertyRelative("capScale").floatValue = 1f;
-
-    }
-
-    public override void OnInspectorGUI()
-    {
-        serializedObject.Update();
+    void ForceRebuild() {
+        if (target == null) return;
         TubeBuilderRenderer r = (TubeBuilderRenderer)target;
-
-        EditorGUILayout.LabelField("gizmo", EditorStyles.boldLabel);
-        EditorGUILayout.PropertyField(gizmoCurveColor, new GUIContent("curve line color"));
-        EditorGUILayout.Space();
-
-        EditorGUILayout.LabelField("mesh tools", EditorStyles.boldLabel);
-        s_AutoRebuild = EditorGUILayout.Toggle("auto rebuild", s_AutoRebuild);
-        EditorPrefs.SetBool("TubeBuilderRenderer_AutoRebuild", s_AutoRebuild);
-
-        if (GUILayout.Button("force rebuild"))
-        {
-            r.MarkDirty();
-            r.Rebuild();
-        }
-
-        if (GUILayout.Button("build mesh asset..."))
-        {
-            BuildMeshAsset(r);
-        }
-
-        EditorGUILayout.Space();
-
-        EditorGUILayout.LabelField("tube segments", EditorStyles.boldLabel);
-        if (segmentsList == null) SetupList();
-        segmentsList.DoLayoutList();
-
-        // duplicate button
-        if (selectedIndex >= 0 && selectedIndex < segmentsProp.arraySize)
-        {
-            if (GUILayout.Button("duplicate segment"))
-            {
-                DuplicateSegment(selectedIndex);
-                return;
-            }
-        }
-
-        // deselect button
-        if (GUILayout.Button("deselect segment"))
-        {
-            selectedIndex = -1;
-            Tools.hidden = false;
-        }
-
-        if (selectedIndex >= segmentsProp.arraySize) selectedIndex = segmentsProp.arraySize - 1;
-        if (segmentsProp.arraySize == 0) selectedIndex = -1;
-
-        EditorGUILayout.Space();
-
-        DrawSelectedSegmentSection();
-        EditorGUILayout.Space();
-
-        DrawDebugSection(r);
-
-        serializedObject.ApplyModifiedProperties();
+        r.MarkDirty();
+        r.Rebuild();
+        SceneView.RepaintAll();
     }
 
-    void DuplicateSegment(int index)
-    {
-        serializedObject.Update();
+    public override void OnInspectorGUI() {
+        bool changedExternally = serializedObject.UpdateIfRequiredOrScript();
+        
+        TubeBuilderRenderer r = (TubeBuilderRenderer)target;
+        
+        EditorGUILayout.LabelField("Global Settings", EditorStyles.boldLabel);
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        EditorGUILayout.PropertyField(autoRebuildProp);
+        EditorGUILayout.PropertyField(tubeMaterialProp);
+        EditorGUILayout.PropertyField(gizmoCurveColorProp);
+        EditorGUILayout.PropertyField(showWeightsDebugProp);
+        
+        EditorGUILayout.BeginHorizontal();
+        if (GUILayout.Button("Force Rebuild Mesh")) { ForceRebuild(); }
+        if (GUILayout.Button("Build Mesh Asset...")) { BuildMeshAsset(r); }
+        EditorGUILayout.EndHorizontal();
+        EditorGUILayout.EndVertical();
 
+        EditorGUILayout.Space(); 
+        list.DoLayoutList();
+
+        EditorGUILayout.BeginHorizontal();
+        if (selectedIndex >= 0 && selectedIndex < segmentsProp.arraySize) {
+            if (GUILayout.Button("Duplicate Selected")) { DuplicateSegment(selectedIndex); }
+        }
+        if (GUILayout.Button("Deselect All")) { selectedIndex = -1; Tools.hidden = false; }
+        EditorGUILayout.EndHorizontal();
+
+        EditorGUILayout.Space();
+
+        if (selectedIndex >= 0 && selectedIndex < segmentsProp.arraySize) {
+            DrawSegmentSettings(segmentsProp.GetArrayElementAtIndex(selectedIndex));
+        } else {
+            EditorGUILayout.HelpBox("Select a segment from the list to edit its properties.", MessageType.Info);
+        }
+
+        if (serializedObject.ApplyModifiedProperties() || GUI.changed || changedExternally) {
+            if (r.autoRebuild) ForceRebuild();
+        }
+    }
+
+    void DuplicateSegment(int index) {
+        serializedObject.Update();
         segmentsProp.InsertArrayElementAtIndex(index);
         SerializedProperty newSeg = segmentsProp.GetArrayElementAtIndex(index + 1);
-        SerializedProperty oldSeg = segmentsProp.GetArrayElementAtIndex(index);
-
-        newSeg.FindPropertyRelative("name").stringValue =
-            oldSeg.FindPropertyRelative("name").stringValue + " copy";
-
+        newSeg.FindPropertyRelative("name").stringValue += " (Copy)";
+        
         selectedIndex = index + 1;
-        Tools.hidden = true;
-
         serializedObject.ApplyModifiedProperties();
+        ForceRebuild();
     }
 
-    void DrawSelectedSegmentSection()
-    {
-        if (selectedIndex < 0 || selectedIndex >= segmentsProp.arraySize) return;
-
-        SerializedProperty segProp = segmentsProp.GetArrayElementAtIndex(selectedIndex);
-        if (segProp == null) return;
-
-        EditorGUILayout.LabelField("selected tube", EditorStyles.boldLabel);
-        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-
-        SerializedProperty nameProp = segProp.FindPropertyRelative("name");
-        nameProp.stringValue = EditorGUILayout.TextField("name", nameProp.stringValue);
-
-        SerializedProperty enabledProp = segProp.FindPropertyRelative("enabled");
-        enabledProp.boolValue = EditorGUILayout.Toggle("enabled", enabledProp.boolValue);
-
-        SerializedProperty genTubeProp = segProp.FindPropertyRelative("generateTube");
-        genTubeProp.boolValue = EditorGUILayout.Toggle("generate tube", genTubeProp.boolValue);
-
-        SerializedProperty p0 = segProp.FindPropertyRelative("p0");
-        SerializedProperty p1 = segProp.FindPropertyRelative("p1");
-        SerializedProperty p2 = segProp.FindPropertyRelative("p2");
-
-        EditorGUILayout.LabelField("start point (p0)");
-        p0.vector3Value = EditorGUILayout.Vector3Field(GUIContent.none, p0.vector3Value);
-
-        EditorGUILayout.LabelField("control point (p1)");
-        p1.vector3Value = EditorGUILayout.Vector3Field(GUIContent.none, p1.vector3Value);
-
-        EditorGUILayout.LabelField("end point (p2)");
-        p2.vector3Value = EditorGUILayout.Vector3Field(GUIContent.none, p2.vector3Value);
-
-        SerializedProperty segCount = segProp.FindPropertyRelative("segments");
-        SerializedProperty radCount = segProp.FindPropertyRelative("radialSegments");
-        SerializedProperty twistProp = segProp.FindPropertyRelative("twist");
-
-        segCount.intValue = Mathf.Max(2, EditorGUILayout.IntField("curve segments", segCount.intValue));
-        radCount.intValue = Mathf.Max(3, EditorGUILayout.IntField("radial segments", radCount.intValue));
-        twistProp.floatValue = EditorGUILayout.FloatField("twist (deg)", twistProp.floatValue);
-
-        SerializedProperty curveProp = segProp.FindPropertyRelative("radiusProfile");
-        curveProp.animationCurveValue = EditorGUILayout.CurveField("radius profile", curveProp.animationCurveValue);
-
-        if (GUILayout.Button("open radius editor..."))
-        {
-            TubeCurveEditorWindow.Open(curveProp);
-        }
-
-        SerializedProperty capStartProp = segProp.FindPropertyRelative("capStart");
-        SerializedProperty capEndProp = segProp.FindPropertyRelative("capEnd");
-
-        EditorGUILayout.PropertyField(capStartProp, new GUIContent("start cap"));
-        EditorGUILayout.PropertyField(capEndProp, new GUIContent("end cap"));
-
-        SerializedProperty latProp = segProp.FindPropertyRelative("roundedCapSegments");
-        SerializedProperty sphereRadiusProp = segProp.FindPropertyRelative("sphereRadius");
-
-        latProp.intValue = Mathf.Max(0, EditorGUILayout.IntField("rounded cap segments", latProp.intValue));
-        sphereRadiusProp.floatValue = Mathf.Max(0f, EditorGUILayout.FloatField("sphere radius", sphereRadiusProp.floatValue));
-
-		SerializedProperty capScaleProp = segProp.FindPropertyRelative("capScale");
-		capScaleProp.floatValue = EditorGUILayout.FloatField("cap scale", capScaleProp.floatValue);
-
-
-        EditorGUILayout.PropertyField(segProp.FindPropertyRelative("bulgePower"), new GUIContent("bulge power"));
-
-        EditorGUILayout.LabelField("start color");
-        EditorGUILayout.PropertyField(segProp.FindPropertyRelative("startColor"), GUIContent.none);
-
-        EditorGUILayout.LabelField("end color");
-        EditorGUILayout.PropertyField(segProp.FindPropertyRelative("endColor"), GUIContent.none);
-
-        SerializedProperty offsetProp = segProp.FindPropertyRelative("colorLerpOffset");
-        SerializedProperty scaleProp = segProp.FindPropertyRelative("colorLerpScale");
-
-        offsetProp.floatValue = EditorGUILayout.FloatField("color lerp offset", offsetProp.floatValue);
-        scaleProp.floatValue = EditorGUILayout.FloatField("color lerp scale", scaleProp.floatValue);
-
-        SerializedProperty cutoffProp = segProp.FindPropertyRelative("colorCutoffSegment");
-        int segCountVal = segProp.FindPropertyRelative("segments").intValue;
-
-        cutoffProp.intValue = EditorGUILayout.IntField("color cutoff segment", cutoffProp.intValue);
-
-        if (cutoffProp.intValue < -1) cutoffProp.intValue = -1;
-        if (cutoffProp.intValue > segCountVal) cutoffProp.intValue = segCountVal;
-
-        EditorGUILayout.EndVertical();
-    }
-
-    void DrawDebugSection(TubeBuilderRenderer r)
-    {
-        s_ShowDebug = EditorGUILayout.ToggleLeft("show debug", s_ShowDebug, EditorStyles.boldLabel);
-        if (!s_ShowDebug) return;
-
-        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
-
-        int count = segmentsProp != null ? segmentsProp.arraySize : 0;
-        EditorGUILayout.LabelField("tube count: " + count);
-
-        MeshFilter mf = r.GetComponent<MeshFilter>();
-        Mesh mesh = mf != null ? mf.sharedMesh : null;
-
-        if (mesh != null)
-        {
-            EditorGUILayout.LabelField("mesh vertices: " + mesh.vertexCount);
-            EditorGUILayout.LabelField("mesh triangles: " + (mesh.triangles != null ? mesh.triangles.Length / 3 : 0));
-        }
-        else EditorGUILayout.LabelField("mesh: (none)");
-
-        if (selectedIndex >= 0 && selectedIndex < count)
-        {
-            SerializedProperty segProp = segmentsProp.GetArrayElementAtIndex(selectedIndex);
-            SerializedProperty segCount = segProp.FindPropertyRelative("segments");
-            SerializedProperty radCount = segProp.FindPropertyRelative("radialSegments");
-            SerializedProperty latProp = segProp.FindPropertyRelative("roundedCapSegments");
-
-            EditorGUILayout.LabelField("curve segments: " + Mathf.Max(2, segCount.intValue));
-            EditorGUILayout.LabelField("radial segments: " + Mathf.Max(3, radCount.intValue));
-            EditorGUILayout.LabelField("rounded cap segments: " + Mathf.Max(0, latProp.intValue));
-        }
-
-        EditorGUILayout.EndVertical();
-    }
-
-    void BuildMeshAsset(TubeBuilderRenderer r)
-    {
+    void BuildMeshAsset(TubeBuilderRenderer r) {
+        // 1. Force a final rebuild of the procedural mesh
         r.Rebuild();
-        MeshFilter mf = r.GetComponent<MeshFilter>();
-        if (mf == null)
-        {
-            EditorUtility.DisplayDialog("no meshfilter", "no meshfilter found on this object.", "ok");
+        GameObject originalGo = r.gameObject;
+
+        // 2. Select Save Location
+        string folderPath = EditorUtility.SaveFolderPanel("Select Folder to Save Baked Asset", "Assets", "");
+        if (string.IsNullOrEmpty(folderPath)) return;
+        
+        // Convert absolute path to Unity relative path
+        if (!folderPath.Contains(Application.dataPath)) {
+            EditorUtility.DisplayDialog("Error", "Please select a folder inside your Assets folder.", "OK");
+            return;
+        }
+        folderPath = "Assets" + folderPath.Substring(Application.dataPath.Length);
+        
+        string meshPath = folderPath + "/" + originalGo.name + "_Mesh.asset";
+        string prefabPath = folderPath + "/" + originalGo.name + "_Prefab.prefab";
+
+        // 3. Save the Mesh Asset First
+        // We must save the mesh to disk so the prefab has a permanent file to reference
+        Mesh meshToSave = null;
+        SkinnedMeshRenderer smr = originalGo.GetComponent<SkinnedMeshRenderer>();
+        MeshFilter mf = originalGo.GetComponent<MeshFilter>();
+
+        if (smr != null) meshToSave = smr.sharedMesh;
+        else if (mf != null) meshToSave = mf.sharedMesh;
+
+        if (meshToSave == null) {
+            EditorUtility.DisplayDialog("Error", "No mesh found to bake!", "OK");
             return;
         }
 
-        Mesh src = mf.sharedMesh;
-        if (src == null)
-        {
-            r.Rebuild();
-            src = mf.sharedMesh;
+        Mesh meshAsset = Instantiate(meshToSave); // Deep copy
+        AssetDatabase.CreateAsset(meshAsset, meshPath);
+
+        // 4. Create the "Clean" Clone
+        // We instantiate the whole object so the bone hierarchy is preserved
+        GameObject tempClone = (GameObject)Instantiate(originalGo);
+        tempClone.name = originalGo.name;
+
+        // 5. Remove the TubeBuilderRenderer script from the clone
+        TubeBuilderRenderer scriptOnClone = tempClone.GetComponent<TubeBuilderRenderer>();
+        if (scriptOnClone != null) {
+            DestroyImmediate(scriptOnClone);
         }
 
-        if (src == null)
-        {
-            EditorUtility.DisplayDialog("no mesh", "no mesh available to save. try force rebuild first.", "ok");
-            return;
-        }
+        // 6. Point the clone's renderer to the new saved Mesh Asset
+        SkinnedMeshRenderer cloneSmr = tempClone.GetComponent<SkinnedMeshRenderer>();
+        MeshFilter cloneMf = tempClone.GetComponent<MeshFilter>();
 
-        string path = EditorUtility.SaveFilePanelInProject("save mesh asset", "TubeMesh", "asset", "choose a location to save the generated mesh.");
-        if (string.IsNullOrEmpty(path)) return;
+        if (cloneSmr != null) cloneSmr.sharedMesh = meshAsset;
+        if (cloneMf != null) cloneMf.sharedMesh = meshAsset;
 
-        Mesh newMesh = Object.Instantiate(src);
-        newMesh.name = "TubeMesh";
+        // 7. Save as Prefab
+    #if UNITY_2018_3_OR_NEWER
+        PrefabUtility.SaveAsPrefabAsset(tempClone, prefabPath);
+    #else
+        // Unity 2017.4 and 2018.2 use this:
+        PrefabUtility.CreatePrefab(prefabPath, tempClone);
+    #endif
 
-        AssetDatabase.CreateAsset(newMesh, path);
+        // 8. Cleanup
+        DestroyImmediate(tempClone); // Remove the temp object from the scene
         AssetDatabase.SaveAssets();
         AssetDatabase.Refresh();
 
-        mf.sharedMesh = newMesh;
-        EditorUtility.DisplayDialog("mesh saved", "mesh asset created successfully.", "ok");
+        EditorUtility.DisplayDialog("Success", "Baked Prefab and Mesh saved to: " + folderPath, "OK");
     }
 
-    void OnSceneGUI()
-    {
-        TubeBuilderRenderer r = (TubeBuilderRenderer)target;
-        if (r == null || r.segments == null) return;
-        if (segmentsProp == null) return;
+    void DrawSegmentSettings(SerializedProperty s) {
+        EditorGUILayout.BeginVertical(EditorStyles.helpBox);
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("name"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("enabled"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("generateTube"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("connectToPrevious"));
+        
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Path Points", EditorStyles.miniBoldLabel);
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("p0"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("p1"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("p2"));
 
-        Tools.hidden = selectedIndex >= 0;
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Mesh Geometry", EditorStyles.miniBoldLabel);
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("segments"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("radialSegments"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("twist"));
 
-        Transform tr = r.transform;
-        serializedObject.Update();
-
-        if (selectedIndex >= 0 && selectedIndex < segmentsProp.arraySize)
-        {
-            SerializedProperty segProp = segmentsProp.GetArrayElementAtIndex(selectedIndex);
-            if (segProp != null)
-            {
-                SerializedProperty p0Prop = segProp.FindPropertyRelative("p0");
-                SerializedProperty p1Prop = segProp.FindPropertyRelative("p1");
-                SerializedProperty p2Prop = segProp.FindPropertyRelative("p2");
-
-                Vector3 p0 = tr.TransformPoint(p0Prop.vector3Value);
-                Vector3 p1 = tr.TransformPoint(p1Prop.vector3Value);
-                Vector3 p2 = tr.TransformPoint(p2Prop.vector3Value);
-
-                Handles.color = r.gizmoCurveColor;
-                Handles.DrawLine(p0, p1);
-                Handles.DrawLine(p1, p2);
-
-                EditorGUI.BeginChangeCheck();
-                Vector3 newP0 = Handles.PositionHandle(p0, Quaternion.identity);
-                Vector3 newP1 = Handles.PositionHandle(p1, Quaternion.identity);
-                Vector3 newP2 = Handles.PositionHandle(p2, Quaternion.identity);
-                if (EditorGUI.EndChangeCheck())
-                {
-                    Undo.RecordObject(r, "move tube control points");
-                    p0Prop.vector3Value = tr.InverseTransformPoint(newP0);
-                    p1Prop.vector3Value = tr.InverseTransformPoint(newP1);
-                    p2Prop.vector3Value = tr.InverseTransformPoint(newP2);
-                    serializedObject.ApplyModifiedProperties();
-                    r.MarkDirty();
-                    if (s_AutoRebuild) r.Rebuild();
-                }
-            }
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Profiles", EditorStyles.miniBoldLabel);
+        
+        SerializedProperty curveProp1 = s.FindPropertyRelative("radiusProfile");
+        EditorGUILayout.PropertyField(curveProp1, new GUIContent("Radius Profile"));
+        if (GUILayout.Button("Open Radius Editor")) {
+            serializedObject.ApplyModifiedProperties(); 
+            TubeCurveEditorWindow.Open(curveProp1);
         }
 
-        serializedObject.ApplyModifiedProperties();
+        SerializedProperty curveProp2 = s.FindPropertyRelative("radialShapeCurve");
+        EditorGUILayout.PropertyField(curveProp2, new GUIContent("Radial Shape Curve"));
+        if (GUILayout.Button("Open Radial Shape Editor")) {
+            serializedObject.ApplyModifiedProperties();
+            TubeCurveEditorWindow.Open(curveProp2);
+        }
+
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Visuals & Colors", EditorStyles.miniBoldLabel);
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("startColor"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("endColor"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvMapping"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvTiling"));
+        EditorGUILayout.PropertyField(s.FindPropertyRelative("uvOffset"));
+
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("End Caps", EditorStyles.miniBoldLabel);
+        DrawCap(s.FindPropertyRelative("startCap"), "Start Cap");
+        DrawCap(s.FindPropertyRelative("endCap"), "End Cap");
+
+        EditorGUILayout.Space();
+        EditorGUILayout.LabelField("Skinning / Bones", EditorStyles.miniBoldLabel);
+        SerializedProperty useBones = s.FindPropertyRelative("useBones");
+        EditorGUILayout.PropertyField(useBones);
+        if (useBones.boolValue) {
+            EditorGUI.indentLevel++;
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("bonesPerSegment"));
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("useNestedChain"));
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("blendOffset"));
+            EditorGUILayout.PropertyField(s.FindPropertyRelative("blendScaler"));
+            EditorGUI.indentLevel--;
+        }
+        EditorGUILayout.EndVertical();
+    }
+
+    void DrawCap(SerializedProperty cap, string label) {
+        EditorGUILayout.LabelField(label, EditorStyles.miniLabel); 
+        EditorGUI.indentLevel++;
+        SerializedProperty type = cap.FindPropertyRelative("type"); 
+        EditorGUILayout.PropertyField(type);
+        if (type.enumValueIndex != 0) {
+            EditorGUILayout.PropertyField(cap.FindPropertyRelative("scale"));
+            if (type.enumValueIndex == 3) {
+                EditorGUILayout.PropertyField(cap.FindPropertyRelative("bulge"));
+                EditorGUILayout.PropertyField(cap.FindPropertyRelative("segments"));
+            }
+            if (type.enumValueIndex == 4) {
+                EditorGUILayout.PropertyField(cap.FindPropertyRelative("sphereRadius"));
+                EditorGUILayout.PropertyField(cap.FindPropertyRelative("sphereResolution"));
+            }
+        }
+        EditorGUI.indentLevel--;
+    }
+
+    void OnSceneGUI() {
+        TubeBuilderRenderer r = (TubeBuilderRenderer)target;
+        if (selectedIndex < 0 || selectedIndex >= r.segments.Length) return;
+
+        EditorGUI.BeginChangeCheck();
+        Transform t = r.transform;
+        Vector3 p0 = t.TransformPoint(r.segments[selectedIndex].p0);
+        Vector3 p1 = t.TransformPoint(r.segments[selectedIndex].p1);
+        Vector3 p2 = t.TransformPoint(r.segments[selectedIndex].p2);
+
+        Handles.color = r.gizmoCurveColor;
+        Handles.DrawLine(p0, p1); Handles.DrawLine(p1, p2);
+        Vector3 n0 = Handles.PositionHandle(p0, Quaternion.identity);
+        Vector3 n1 = Handles.PositionHandle(p1, Quaternion.identity);
+        Vector3 n2 = Handles.PositionHandle(p2, Quaternion.identity);
+
+        if (EditorGUI.EndChangeCheck()) {
+            Undo.RecordObject(r, "Move Path Points");
+            r.segments[selectedIndex].p0 = t.InverseTransformPoint(n0);
+            r.segments[selectedIndex].p1 = t.InverseTransformPoint(n1);
+            r.segments[selectedIndex].p2 = t.InverseTransformPoint(n2);
+            
+            if (r.segments[selectedIndex].connectToPrevious && selectedIndex > 0) {
+                r.segments[selectedIndex - 1].p2 = r.segments[selectedIndex].p0;
+            }
+            r.MarkDirty();
+            if (r.autoRebuild) r.Rebuild();
+        }
+    }
+
+    void InitSegmentDefaults(SerializedProperty s, int index) {
+        s.FindPropertyRelative("name").stringValue = "Segment " + index;
+        s.FindPropertyRelative("enabled").boolValue = true;
+        s.FindPropertyRelative("p2").vector3Value = Vector3.up;
+        s.FindPropertyRelative("segments").intValue = 8;
+        s.FindPropertyRelative("radialSegments").intValue = 8;
+        s.FindPropertyRelative("uvTiling").vector2Value = Vector2.one;
+        s.FindPropertyRelative("generateTube").boolValue = true;
+        s.FindPropertyRelative("startColor").colorValue = Color.white;
+        s.FindPropertyRelative("endColor").colorValue = Color.white;
+        s.FindPropertyRelative("bonesPerSegment").intValue = 2;
+        s.FindPropertyRelative("blendScaler").floatValue = 1f;
+        s.FindPropertyRelative("radialShapeCurve").animationCurveValue = AnimationCurve.Linear(0,1,1,1);
+        s.FindPropertyRelative("radiusProfile").animationCurveValue = AnimationCurve.Linear(0,0.05f,1,0.05f);
+        
+        SerializedProperty sc = s.FindPropertyRelative("startCap");
+        sc.FindPropertyRelative("type").enumValueIndex = 3; 
+        sc.FindPropertyRelative("scale").floatValue = 1f;
+        sc.FindPropertyRelative("bulge").floatValue = 1f;
+        sc.FindPropertyRelative("segments").intValue = 4;
+        sc.FindPropertyRelative("sphereRadius").floatValue = 0.05f;
+        sc.FindPropertyRelative("sphereResolution").intValue = 8;
+
+        SerializedProperty ec = s.FindPropertyRelative("endCap");
+        ec.FindPropertyRelative("type").enumValueIndex = 3; 
+        ec.FindPropertyRelative("scale").floatValue = 1f;
+        ec.FindPropertyRelative("bulge").floatValue = 1f;
+        ec.FindPropertyRelative("segments").intValue = 4;
+        ec.FindPropertyRelative("sphereRadius").floatValue = 0.05f;
+        ec.FindPropertyRelative("sphereResolution").intValue = 8;
     }
 }
